@@ -508,182 +508,261 @@ async function gsJira(epicsPayload) {
   return await res.json();
 }
 
-function ClusterToJiraTab({ reqs, upvotes, scores }) {
-  const [step, setStep] = useState("select"); // select | review | pushing | done
-  const [selectedClusters, setSelectedClusters] = useState([]);
-  const [generatedEpics, setGeneratedEpics] = useState([]);
-  const [generating, setGenerating] = useState(false);
-  const [pushResult, setPushResult] = useState(null);
+function JiraTab({ reqs }) {
+  // step: "select" | "epics" | "tickets" | "pushing" | "done"
+  const [step, setStep]               = useState("select");
+  const [selectedReqIds, setSelected] = useState([]);
+  const [epics, setEpics]             = useState([]);
+  const [generatingEpics, setGenEpics]= useState(false);
+  const [generatingTickets, setGenTix]= useState(null); // epic idx being generated
+  const [pushResult, setPushResult]   = useState(null);
 
-  const CLUSTERS_WITH_REQS = CLUSTERS.filter(c => {
-    return reqs.some(r => r.cluster === c || (c === "Unclustered" && !r.cluster));
-  });
+  const clusterOf = r => r.cluster && r.cluster !== "Unclustered" ? r.cluster : "Unclustered";
+  const reqsWithCluster = reqs.filter(r => r.problem);
 
-  const getReqsForCluster = c => reqs.filter(r => r.cluster === c || (c === "Unclustered" && !r.cluster));
+  // group reqs by cluster for display
+  const byCluster = reqsWithCluster.reduce((acc, r) => {
+    const c = clusterOf(r); if (!acc[c]) acc[c] = []; acc[c].push(r); return acc;
+  }, {});
 
-  const toggleCluster = c => setSelectedClusters(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c]);
+  const toggleReq = id => setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  const toggleAll = () => setSelected(selectedReqIds.length === reqsWithCluster.length ? [] : reqsWithCluster.map(r => r.id));
 
+  const selectedReqs = reqsWithCluster.filter(r => selectedReqIds.includes(r.id));
+
+  // ── Step 1: Generate Epics ──
   const generateEpics = async () => {
-    if (!selectedClusters.length) return;
-    setGenerating(true);
-    const epics = [];
-    for (const cluster of selectedClusters) {
-      const clusterReqs = getReqsForCluster(cluster);
-      const reqSummary = clusterReqs.map(r =>
-        `- Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}\n  Affected: ${(r.stakeholders||[]).join(", ")||"unknown"}`
-      ).join("\n");
-      try {
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1500,
-            messages: [{ role: "user", content: `You are a senior PM at an AI-powered ad production platform. Generate ONE epic for the cluster "${cluster}" based on these requirements.\n\nRequirements:\n${reqSummary}\n\nRespond ONLY with a JSON object: { title, description, bucket ("Must-fix"|"Scale enabler"|"Strategic bet"), tickets: [{title, role, goal, acs: [3 Given/When/Then strings]}] }. Max 3 tickets. English only.` }]
-          })
-        });
-        const data = await res.json();
-        const text = data.content?.find(c => c.type === "text")?.text || "{}";
-        const epic = JSON.parse(text.replace(/```json|```/g, "").trim());
-        epics.push({ ...epic, cluster, id: Date.now() + Math.random(), approved: false });
-      } catch (e) {
-        epics.push({ title: cluster, description: "", bucket: "", tickets: [], cluster, id: Date.now() + Math.random(), approved: false });
-      }
-    }
-    setGeneratedEpics(epics);
-    setGenerating(false);
-    setStep("review");
+    if (!selectedReqs.length) return;
+    setGenEpics(true);
+    const reqSummary = selectedReqs.map(r =>
+      `ID:${r.id} | Cluster:${clusterOf(r)} | Problem: ${r.problem} | Definition of solved: ${r.definition||"n/a"} | Agent potential: ${r.agentPotential||"n/a"} | Workaround: ${r.workaround||"n/a"} | Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).join(", ")}`
+    ).join("\n");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2000,
+          messages: [{ role: "user", content: `You are a senior PM at an AI-powered ad production platform (Airpost). Group the following requirements into epics. Multiple requirements can belong to the same epic if they are related. Each epic should have a clear, actionable title and description.\n\nRequirements:\n${reqSummary}\n\nRespond ONLY with a JSON array of epics: [{ title, description, bucket ("Must-fix"|"Scale enabler"|"Strategic bet"), reqIds: [array of requirement IDs that belong to this epic] }]. English only. No markdown.` }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.find(c => c.type === "text")?.text || "[]";
+      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+      setEpics(parsed.map((e, i) => ({ ...e, id: Date.now() + i, approved: false, tickets: [] })));
+      setStep("epics");
+    } catch(err) { console.error(err); }
+    setGenEpics(false);
   };
 
-  const updateEpic = (idx, patch) => setGeneratedEpics(p => p.map((e,i) => i===idx ? {...e,...patch} : e));
-  const toggleApprove = idx => updateEpic(idx, { approved: !generatedEpics[idx].approved });
-  const updateTicket = (eIdx, tIdx, patch) => setGeneratedEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.map((t,j) => j===tIdx ? {...t,...patch} : t)} : e));
+  // ── Step 2: Generate Tickets for an epic ──
+  const generateTickets = async (eIdx) => {
+    setGenTix(eIdx);
+    const epic = epics[eIdx];
+    const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(r.id) || (epic.reqIds||[]).includes(String(r.id)));
+    const reqSummary = epicReqs.map(r =>
+      `- Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}`
+    ).join("\n");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1500,
+          messages: [{ role: "user", content: `You are a senior PM. Generate 2-4 Jira child tickets (subtasks) for this epic.\n\nEpic: ${epic.title}\nDescription: ${epic.description}\n\nRequirements covered:\n${reqSummary}\n\nRespond ONLY with a JSON array: [{ title, role, goal, acs: ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."] }]. English only. No markdown.` }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.find(c => c.type === "text")?.text || "[]";
+      const tickets = JSON.parse(text.replace(/```json|```/g, "").trim());
+      setEpics(p => p.map((e, i) => i === eIdx ? {...e, tickets} : e));
+    } catch(err) { console.error(err); }
+    setGenTix(null);
+  };
 
+  const updateEpic   = (idx, patch) => setEpics(p => p.map((e,i) => i===idx ? {...e,...patch} : e));
+  const updateTicket = (eIdx, tIdx, patch) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.map((t,j) => j===tIdx ? {...t,...patch} : t)} : e));
+  const removeTicket = (eIdx, tIdx) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.filter((_,j) => j!==tIdx)} : e));
+
+  const approvedEpics = epics.filter(e => e.approved);
+
+  // ── Step 3: Push to Jira ──
   const pushToJira = async () => {
-    const approved = generatedEpics.filter(e => e.approved);
-    if (!approved.length) return;
+    if (!approvedEpics.length) return;
     setStep("pushing");
     try {
-      const result = await gsJira(approved);
+      const result = await gsJira(approvedEpics);
       setPushResult(result);
-      setStep("done");
-    } catch (e) {
-      setPushResult({ ok: false, error: String(e) });
-      setStep("done");
-    }
+    } catch(e) { setPushResult({ ok: false, error: String(e) }); }
+    setStep("done");
   };
 
+  // ── DONE ──
   if (step === "done") return (
     <div className="space-y-4">
       {pushResult?.ok
-        ? <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center space-y-3">
-            <p className="text-4xl">🎉</p>
-            <p className="text-lg font-black text-emerald-700">Pushed to Jira!</p>
-            <p className="text-sm text-emerald-600">Created epics: <strong>{pushResult.keys?.join(", ")}</strong></p>
+        ? <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3">
+            <p className="text-5xl">🎉</p>
+            <p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p>
+            <p className="text-sm text-emerald-600">Epics created: <strong>{pushResult.keys?.join(", ")}</strong></p>
             <p className="text-xs text-emerald-500">Sprint "Airpost Offsite 2026" created with all epics and subtasks.</p>
           </div>
-        : <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center space-y-3">
-            <p className="text-4xl">⚠️</p>
-            <p className="text-lg font-black text-rose-700">Something went wrong</p>
-            <p className="text-xs text-rose-500">{pushResult?.error || "Unknown error"}</p>
+        : <div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3">
+            <p className="text-5xl">⚠️</p>
+            <p className="text-xl font-black text-rose-700">Something went wrong</p>
+            <p className="text-xs text-rose-500 font-mono">{pushResult?.error || "Unknown error"}</p>
           </div>
       }
-      <button onClick={() => { setStep("select"); setSelectedClusters([]); setGeneratedEpics([]); setPushResult(null); }} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">Start over</button>
+      <button onClick={() => { setStep("select"); setSelected([]); setEpics([]); setPushResult(null); }} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
     </div>
   );
 
+  // ── PUSHING ──
   if (step === "pushing") return (
-    <div className="flex flex-col items-center justify-center py-24 gap-4 text-gray-400">
-      <div className="text-5xl animate-pulse">🚀</div>
-      <p className="text-sm font-semibold">Creating epics in Jira…</p>
-      <p className="text-xs">This may take a few seconds</p>
+    <div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400">
+      <div className="text-6xl animate-bounce">🚀</div>
+      <p className="text-sm font-bold text-gray-600">Pushing to Jira…</p>
+      <p className="text-xs">Creating epics, subtasks and sprint</p>
     </div>
   );
 
-  if (step === "review") return (
+  // ── STEP: EPICS REVIEW ──
+  if (step === "epics") return (
     <div className="space-y-4">
-      <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700">
-        <strong>Review & approve</strong> — Check each epic, edit if needed, then approve the ones you want to push to Jira.
-      </div>
-      {generatedEpics.map((epic, eIdx) => (
-        <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved ? "border-emerald-400" : "border-gray-200"}`}>
-          <div className={`px-4 py-3 flex items-center justify-between ${epic.approved ? "bg-emerald-50" : "bg-gray-50"}`}>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-gray-500 bg-white px-2 py-0.5 rounded-full border">{epic.cluster}</span>
-              {epic.bucket && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}
-            </div>
-            <button onClick={() => toggleApprove(eIdx)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>
-              {epic.approved ? "✓ Approved" : "Approve"}
-            </button>
-          </div>
-          <div className="p-4 space-y-3">
-            <div>
-              <label className="text-xs font-bold text-gray-500 block mb-1">Epic Title</label>
-              <input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 font-semibold" value={epic.title} onChange={e => updateEpic(eIdx, {title: e.target.value})} />
-            </div>
-            <div>
-              <label className="text-xs font-bold text-gray-500 block mb-1">Description</label>
-              <textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e => updateEpic(eIdx, {description: e.target.value})} />
-            </div>
-            {epic.tickets?.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-xs font-bold text-gray-500">Subtasks ({epic.tickets.length})</p>
-                {epic.tickets.map((t, tIdx) => (
-                  <div key={tIdx} className="border border-gray-100 rounded-xl p-3 space-y-2 bg-gray-50">
-                    <input className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-indigo-400 font-semibold bg-white" value={t.title} onChange={e => updateTicket(eIdx, tIdx, {title: e.target.value})} placeholder="Ticket title" />
-                    <div className="space-y-1">
-                      {(t.acs||[]).map((ac, ai) => (
-                        <div key={ai} className="flex gap-2 items-start">
-                          <span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span>
-                          <input className="flex-1 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-400 bg-white" value={ac} onChange={e => { const acs=[...t.acs]; acs[ai]=e.target.value; updateTicket(eIdx,tIdx,{acs}); }} />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-bold text-gray-800">Step 2 — Review Epics</p>
+          <p className="text-xs text-gray-400">Edit, approve epics, then generate tickets for each.</p>
         </div>
-      ))}
-      <div className="flex gap-3 pt-2">
-        <button onClick={() => setStep("select")} className="flex-1 py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Back</button>
-        <button onClick={pushToJira} disabled={!generatedEpics.some(e => e.approved)} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-md">
-          🚀 Push {generatedEpics.filter(e=>e.approved).length} epic{generatedEpics.filter(e=>e.approved).length!==1?"s":""} to Jira
+        <button onClick={() => setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
+      </div>
+
+      {epics.map((epic, eIdx) => {
+        const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(r.id) || (epic.reqIds||[]).includes(String(r.id)));
+        return (
+          <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved ? "border-emerald-400" : "border-gray-200"}`}>
+            {/* Header */}
+            <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved ? "bg-emerald-50" : "bg-gray-50"}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>
+                {epic.bucket && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}
+                <span className="text-xs text-gray-400">{epicReqs.length} req{epicReqs.length!==1?"s":""}</span>
+              </div>
+              <button onClick={() => updateEpic(eIdx, {approved: !epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>
+                {epic.approved ? "✓ Approved" : "Approve"}
+              </button>
+            </div>
+            {/* Body */}
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="text-xs font-bold text-gray-500 block mb-1">Title</label>
+                <input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title} onChange={e => updateEpic(eIdx, {title: e.target.value})} />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-500 block mb-1">Description</label>
+                <textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e => updateEpic(eIdx, {description: e.target.value})} />
+              </div>
+              {/* Linked reqs */}
+              {epicReqs.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-bold text-gray-500">Linked requirements</p>
+                  {epicReqs.map(r => <div key={r.id} className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0"/>{r.problem}</div>)}
+                </div>
+              )}
+              {/* Tickets */}
+              {epic.tickets?.length > 0 && (
+                <div className="space-y-2 pt-1 border-t">
+                  <p className="text-xs font-bold text-gray-500 pt-1">Child tickets ({epic.tickets.length})</p>
+                  {epic.tickets.map((t, tIdx) => (
+                    <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
+                      <div className="flex gap-2 items-center">
+                        <span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span>
+                        <input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e => updateTicket(eIdx,tIdx,{title:e.target.value})} />
+                        <button onClick={() => removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0">×</button>
+                      </div>
+                      {t.role && t.goal && <p className="text-xs text-gray-400 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}
+                      <div className="space-y-1">
+                        {(t.acs||[]).map((ac,ai) => (
+                          <div key={ai} className="flex gap-2 items-start">
+                            <span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span>
+                            <input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e => { const acs=[...t.acs]; acs[ai]=e.target.value; updateTicket(eIdx,tIdx,{acs}); }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Generate tickets button */}
+              <button onClick={() => generateTickets(eIdx)} disabled={generatingTickets===eIdx} className="w-full py-2 border-2 border-dashed border-indigo-200 rounded-xl text-xs font-bold text-indigo-500 hover:bg-indigo-50 hover:border-indigo-400 disabled:opacity-40 transition-all">
+                {generatingTickets===eIdx ? "✨ Generating tickets…" : epic.tickets?.length > 0 ? "🔄 Regenerate tickets" : "✨ Generate child tickets"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="sticky bottom-4 pt-2">
+        <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl">
+          🚀 Push {approvedEpics.length} approved epic{approvedEpics.length!==1?"s":""} to Jira
         </button>
+        {!approvedEpics.length && <p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to push</p>}
       </div>
     </div>
   );
 
+  // ── STEP: SELECT REQUIREMENTS ──
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl border p-4 space-y-1">
-        <p className="font-bold text-gray-800 text-sm">🗂️ Cluster → Jira</p>
-        <p className="text-xs text-gray-500">Select the clusters you want to convert into Jira epics. AI will generate one epic per cluster with subtasks.</p>
+        <p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p>
+        <p className="text-xs text-gray-500">Pick the requirements you want to turn into Jira epics. AI will group them intelligently.</p>
       </div>
-      {CLUSTERS_WITH_REQS.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">🗂️</p><p className="text-sm">No clusters assigned yet. Go to Synthesis first.</p></div>
-        : <div className="space-y-2">
-            {CLUSTERS_WITH_REQS.map(c => {
-              const clusterReqs = getReqsForCluster(c);
-              const selected = selectedClusters.includes(c);
-              return (
-                <button key={c} onClick={() => toggleCluster(c)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${selected ? "bg-indigo-50 border-indigo-500" : "bg-white border-gray-200 hover:border-indigo-300"}`}>
-                  <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${selected ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-300"}`}>
-                    {selected && <span className="text-xs">✓</span>}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-bold ${selected ? "text-indigo-700" : "text-gray-700"}`}>{c}</p>
-                    <p className="text-xs text-gray-400">{clusterReqs.length} requirement{clusterReqs.length!==1?"s":""}</p>
-                  </div>
-                  <div className="flex flex-col gap-0.5 items-end">
-                    {clusterReqs.slice(0,2).map((r,i) => <span key={i} className="text-xs text-gray-400 truncate max-w-32">{r.problem?.slice(0,30)}…</span>)}
-                  </div>
-                </button>
-              );
-            })}
+
+      {reqsWithCluster.length === 0
+        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet. Submit some in Day 1 first.</p></div>
+        : <>
+          <div className="bg-white rounded-xl border p-3 flex items-center justify-between">
+            <button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">
+              {selectedReqIds.length === reqsWithCluster.length ? "Deselect all" : "Select all"}
+            </button>
+            <span className="text-xs text-gray-400">{selectedReqIds.length} of {reqsWithCluster.length} selected</span>
           </div>
+
+          {Object.entries(byCluster).map(([cluster, clReqs]) => (
+            <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between">
+                <span className="text-xs font-bold text-white">🗂️ {cluster}</span>
+                <span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span>
+              </div>
+              <div className="divide-y">
+                {clReqs.map(r => {
+                  const tc = teamColor(r.team);
+                  const sel = selectedReqIds.includes(r.id);
+                  return (
+                    <label key={r.id} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
+                      <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel ? "bg-indigo-600 border-indigo-600" : "border-gray-300"}`} onClick={() => toggleReq(r.id)}>
+                        {sel && <span className="text-white text-xs">✓</span>}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-semibold ${sel ? "text-indigo-800" : "text-gray-800"}`}>{r.problem}</p>
+                        <div className="flex flex-wrap gap-1.5 mt-1">
+                          <Badge cls={tc.badge}>{r.team}</Badge>
+                          {r.frequency && <Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}
+                          {r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
+                        </div>
+                        {r.definition && <p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          <div className="sticky bottom-4 pt-2">
+            <button onClick={generateEpics} disabled={!selectedReqIds.length || generatingEpics} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl transition-all">
+              {generatingEpics ? "✨ Grouping into epics…" : `✨ Generate epics from ${selectedReqIds.length} requirement${selectedReqIds.length!==1?"s":""}`}
+            </button>
+          </div>
+        </>
       }
-      <button onClick={generateEpics} disabled={!selectedClusters.length || generating} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-md">
-        {generating ? "✨ Generating epics…" : `✨ Generate epics for ${selectedClusters.length} cluster${selectedClusters.length!==1?"s":""}`}
-      </button>
     </div>
   );
 }
@@ -938,7 +1017,7 @@ function App() {
         {day===2 && tab===0 && <ReadOutTab reqs={reqs} upvotes={upvotes} scores={scores} />}
         {day===2 && tab===1 && <SynthesisTab reqs={reqs} upvotes={upvotes} scores={scores} onUpdateReq={updateReq} />}
         {day===2 && tab===2 && <EngineeringTab reqs={reqs} epics={epics} onSaveEpic={saveEpic} />}
-        {day===2 && tab===3 && <ClusterToJiraTab reqs={reqs} upvotes={upvotes} scores={scores} />}
+        {day===2 && tab===3 && <JiraTab reqs={reqs} />}
       </div>
     </div>
   );
