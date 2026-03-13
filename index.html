@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Offsite Hub</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
+
+async function gsGet(sheet) {
+  try {
+    const res = await fetch(`${GS_URL}?sheet=${encodeURIComponent(sheet)}`);
+    return await res.json();
+  } catch { return []; }
+}
+async function gsUpsert(sheet, data) {
+  try {
+    const url = `${GS_URL}?action=upsert&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify(data))}`;
+    await fetch(url);
+  } catch {}
+}
+async function loadScoresUpvotes() {
+  const rows = await gsGet("scores_upvotes");
+  let scores = {}, upvotes = {};
+  rows.forEach(r => {
+    if (r.scores)  scores[r.id]  = r.scores;
+    if (r.upvotes) upvotes[r.id] = r.upvotes;
+  });
+  return { scores, upvotes };
+}
+async function saveScoresUpvotes(id, scores, upvotes) {
+  await gsUpsert("scores_upvotes", { id, scores: scores[id] || {}, upvotes: upvotes[id] || {} });
+}
+async function translateToEnglish(fields) {
+  const toTranslate = Object.entries(fields).filter(([,v]) => v && typeof v === "string" && v.trim());
+  if (!toTranslate.length) return fields;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000,
+        messages: [{ role: "user", content: `Translate the following fields to English. Keep professional tone. Preserve meaning exactly. Respond ONLY with a JSON object with the same keys, translated values. If already English, keep as-is.\n\n${JSON.stringify(Object.fromEntries(toTranslate))}` }]
+      })
+    });
+    const data = await res.json();
+    const text = data.content?.find(c => c.type === "text")?.text || "{}";
+    return { ...fields, ...JSON.parse(text.replace(/```json|```/g, "").trim()) };
+  } catch { return fields; }
+}
+
+const PIPELINE_STAGES = ["Onboarding / Brief","Creative Strategy / Strategy Sheet","Script Generation","Editing","Review","Delivery","Tweaking – Quick Editor","Tweaking – Manual Revision Request","Cross-stage"];
+const STAKEHOLDERS    = ["Customer","Creative","Editors","PMs","Engineering"];
+const CONSEQUENCES    = ["Time loss","Quality degradation","Scale limitation","Client churn risk","Internal burn"];
+const FREQUENCIES     = ["Always","Often","Sometimes","Rare but critical"];
+const FREQ_META       = { Always:{emoji:"🔴",desc:"Every project"}, Often:{emoji:"🟠",desc:"Most projects"}, Sometimes:{emoji:"🟡",desc:"Edge cases"}, "Rare but critical":{emoji:"⚪",desc:"Low freq, high impact"} };
+const AGENT_POTENTIALS= ["Assisted by AI","Fully automated","Orchestrated by an agent","Not suitable for AI"];
+const AGENT_META      = {
+  "Assisted by AI":          { emoji:"🤝", desc:"A human still makes the call, but AI drafts, suggests or pre-fills." },
+  "Fully automated":         { emoji:"⚡", desc:"No human needed. AI runs the step end-to-end every time." },
+  "Orchestrated by an agent":{ emoji:"🕸️", desc:"An agent coordinates multiple tools or steps autonomously." },
+  "Not suitable for AI":     { emoji:"🚫", desc:"Requires human judgment, client relationship, or creative intuition." },
+};
+const CLUSTERS   = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered"];
+const CATEGORIES = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture"];
+const CAT_META   = { "Workflow Optimization":{desc:"Incremental process improvement"}, "Agent Enablement":{desc:"Requires data & structure redesign"}, "Structural Re-Architecture":{desc:"Platform-level bet"} };
+const BUCKETS    = ["Must-fix","Scale enabler","Strategic bet"];
+const SIZINGS    = ["S – hours","M – days","L – weeks","XL – months"];
+const STACK_AREAS= ["Auth Service","Airpost / Brief","Dojo","Ad Studio","QC Gallery","SCF / Pathways Library","Cross-platform"];
+const TABS_D1    = ["➕ Submit","📋 Requirements","🏆 Ranking"];
+const TABS_D2    = ["🎤 Read-Out","🗂️ Synthesis","⚙️ Engineering"];
+const TEAMS      = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
+const ENGINEERS  = ["Lu","Vicky M","Ale","Colo","Gaston","Pablo"];
+
+const FIELD_TOOLTIPS = {
+  problem:      { title:"The Problem Statement", what:"One sentence naming the symptom — what broke, slowed down, or created risk.", why:"This becomes the title of the requirement.", tips:["Focus on the symptom, not the cause","Avoid 'we should' — describe what's broken today","If you can't say it in one sentence, the problem isn't scoped yet"], bad:"The brief process is inefficient", good:"Editors don't know the required video format until after they've finished editing" },
+  roleplay:     { title:"Roleplay Evidence", what:"A concrete blow-by-blow of what happened in the simulation.", why:"This is the evidence that makes the problem real.", tips:["Name the roles involved","Include the exact sequence of events","End with the consequence","Mention any workaround used"], bad:"There was confusion about the format", good:"PM sent Slack asking about aspect ratio. No response for 20 min. Editor assumed 9:16, finished cut. Client replied asking for 16:9 — 45 min rework." },
+  frequency:    { title:"How Often Does This Happen?", what:"Honest estimate of how frequently this problem occurs in real production.", why:"Frequency is one of the biggest drivers of prioritization.", tips:["Think about the last 10 projects","Always = virtually every project","Often = more than half","Sometimes = occasional","Rare but critical = low freq, high severity"] },
+  pipelineStage:{ title:"Pipeline Stage", what:"Where in the production pipeline does this problem occur?", why:"Helps cluster requirements by theme.", tips:["Pick the stage where the problem first surfaces","Cross-stage = spans multiple stages"], stages:["Onboarding / Brief → Auth Service + Airpost Brief","Creative Strategy → Strategy sheet","Script Generation → Dojo","Editing → Ad Studio","Review → QC Gallery","Delivery → Final export","Tweaking → Quick Editor or manual revisions"] },
+  stakeholders: { title:"Who Feels the Pain?", what:"Select every role negatively affected.", why:"Problems impacting multiple stakeholders are systematically more urgent.", tips:["Customer = brand/client","Creative = strategy and scripting","Editors = producing and cutting","PMs = coordinating and tracking","Engineering = tech debt or on-call burden"] },
+  consequences: { title:"What Does It Actually Cost?", what:"The real downstream impact of leaving this unsolved.", why:"Separates 'annoying' from 'existentially dangerous'.", tips:["Time loss = someone spending time they shouldn't","Quality degradation = output is worse","Scale limitation = can't grow without fixing","Client churn risk = could lose a client","Internal burn = burning out the team"] },
+  workaround:   { title:"Current Workaround", what:"What does the team do today to compensate?", why:"Every workaround is proof the problem is real.", tips:["Be specific: 'asks on Slack and waits'","Estimate the time cost","If no workaround: 'We accept the failure / guess / skip it'"], bad:"We handle it manually", good:"Editor sends Slack to PM, waits for client reply, sometimes guesses. ~20–45 min lost per project." },
+  agentPotential:{ title:"Agent Potential", what:"What level of AI automation makes sense?", why:"Helps Engineering design the right solution from the start.", tips:["Be honest — not everything should be automated","Rule-based steps are better candidates","Orchestrated = involves coordinating multiple steps"] },
+  definition:   { title:"Definition of Solved", what:"What would day-to-day look like if this problem no longer existed?", why:"This becomes the acceptance criteria for the epic.", tips:["Write in present tense: 'The editor always receives…'","Focus on what stops happening","Focus on what starts happening automatically","Avoid describing the technical implementation"], bad:"A system that validates the brief automatically", good:"The brief always arrives at editing with the required format filled in. The editor never has to ask or guess." },
+};
+
+const TEAM_COLORS = [
+  {bg:"bg-violet-500", light:"bg-violet-50 border-violet-400 text-violet-700",  badge:"bg-violet-100 text-violet-800"},
+  {bg:"bg-emerald-500",light:"bg-emerald-50 border-emerald-400 text-emerald-700",badge:"bg-emerald-100 text-emerald-800"},
+  {bg:"bg-rose-500",   light:"bg-rose-50 border-rose-400 text-rose-700",         badge:"bg-rose-100 text-rose-800"},
+  {bg:"bg-amber-500",  light:"bg-amber-50 border-amber-400 text-amber-700",      badge:"bg-amber-100 text-amber-800"},
+  {bg:"bg-cyan-500",   light:"bg-cyan-50 border-cyan-400 text-cyan-700",         badge:"bg-cyan-100 text-cyan-800"},
+  {bg:"bg-pink-500",   light:"bg-pink-50 border-pink-400 text-pink-700",         badge:"bg-pink-100 text-pink-800"},
+];
+const teamColor = n => TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0];
+
+const EMPTY_REQ    = { problem:"", roleplayExample:"", frequency:"", stakeholders:[], consequences:[], agentPotential:"", workaround:"", definition:"", pipelineStage:"" };
+const EMPTY_EPIC   = { title:"", description:"", reqIds:[], stackArea:"", sizing:"", category:"", bucket:"", tradeoffs:"", assignee:"", tickets:[] };
+const EMPTY_TICKET = { title:"", role:"", goal:"", acs:["","",""] };
+
+const catBadge    = c => ({"Workflow Optimization":"bg-green-100 text-green-800","Agent Enablement":"bg-purple-100 text-purple-800","Structural Re-Architecture":"bg-red-100 text-red-800"}[c] || "bg-gray-100 text-gray-600");
+const buckBadge   = b => ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"}[b] || "bg-gray-100 text-gray-600");
+const agentBadge  = a => ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"}[a] || "bg-gray-100 text-gray-500");
+const sizingColor = s => ({"S – hours":"bg-green-100 text-green-700","M – days":"bg-yellow-100 text-yellow-700","L – weeks":"bg-orange-100 text-orange-700","XL – months":"bg-red-100 text-red-700"}[s] || "bg-gray-100 text-gray-600");
+
+function Tooltip({ tip }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button onClick={() => setOpen(o => !o)} className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-500 text-xs font-black hover:bg-indigo-200 flex items-center justify-center flex-shrink-0">?</button>
+      {open && (
+        <div className="absolute z-50 left-0 top-7 w-80 bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-3">
+          <p className="text-sm font-black text-gray-900">{tip.title}</p>
+          <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">What</p><p className="text-xs text-gray-600 leading-relaxed">{tip.what}</p></div>
+          <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Why it matters</p><p className="text-xs text-gray-600 leading-relaxed">{tip.why}</p></div>
+          {tip.tips && <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Tips</p><ul className="space-y-1">{tip.tips.map((t,i) => <li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">→</span>{t}</li>)}</ul></div>}
+          {tip.stages && <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Stages reference</p><ul className="space-y-1">{tip.stages.map((s,i) => <li key={i} className="text-xs text-gray-500 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">·</span>{s}</li>)}</ul></div>}
+          {(tip.bad || tip.good) && (
+            <div className="space-y-2 pt-1 border-t border-gray-100">
+              {tip.bad && <div className="bg-red-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-red-500 mb-0.5">❌ Too vague</p><p className="text-xs text-red-700 italic">"{tip.bad}"</p></div>}
+              {tip.good && <div className="bg-green-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-green-600 mb-0.5">✅ Good example</p><p className="text-xs text-green-700 italic">"{tip.good}"</p></div>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Badge({ cls, children }) {
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cls}`}>{children}</span>;
+}
+function Chip({ label, active, onClick }) {
+  return <button onClick={onClick} className={`text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all ${active ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}>{label}</button>;
+}
+function MultiChips({ options, selected, onChange }) {
+  return <div className="flex flex-wrap gap-2">{options.map(o => <Chip key={o} label={o} active={selected.includes(o)} onClick={() => onChange(selected.includes(o) ? selected.filter(x => x !== o) : [...selected, o])} />)}</div>;
+}
+function ScorePicker({ label, emoji, value, onChange, color }) {
+  const cls = { blue:"bg-blue-600 border-blue-600", orange:"bg-orange-500 border-orange-500", red:"bg-red-600 border-red-600", indigo:"bg-indigo-600 border-indigo-600" };
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-semibold text-gray-600">{emoji} {label}</p>
+      <div className="flex gap-1">{[1,2,3,4,5].map(n => <button key={n} onClick={() => onChange(n)} className={`w-8 h-8 rounded-lg border text-xs font-bold transition-all ${value === n ? `${cls[color]} text-white` : "border-gray-300 text-gray-400 hover:border-indigo-300"}`}>{n}</button>)}</div>
+    </div>
+  );
+}
+function Section({ step, bgColor, emoji, label, sublabel, children }) {
+  return (
+    <div className="rounded-2xl border shadow-sm overflow-hidden">
+      <div className={`${bgColor} px-5 py-4 flex items-center gap-3`}>
+        <div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{step}</div>
+        <div><p className="text-base font-black text-white">{emoji} {label}</p>{sublabel && <p className="text-xs text-white opacity-80 mt-0.5">{sublabel}</p>}</div>
+      </div>
+      <div className="bg-white p-5 space-y-5">{children}</div>
+    </div>
+  );
+}
+function Field({ label, required, tipKey, children }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <label className="text-sm font-bold text-gray-800">{label}{required && <span className="text-red-400"> *</span>}</label>
+        {tipKey && FIELD_TOOLTIPS[tipKey] && <Tooltip tip={FIELD_TOOLTIPS[tipKey]} />}
+      </div>
+      {children}
+    </div>
+  );
+}
+function SyncBadge({ status }) {
+  const map = { syncing:"🔄 Syncing…", ok:"✅ Saved", error:"⚠️ Sync error" };
+  const cls = { syncing:"text-indigo-500", ok:"text-emerald-600", error:"text-rose-600" };
+  if (!map[status]) return null;
+  return <span className={`text-xs font-semibold ${cls[status]}`}>{map[status]}</span>;
+}
+
+function EntryScreen({ onEnter }) {
+  const [team, setTeam] = useState(null);
+  const [day,  setDay]  = useState(null);
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
+      <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
+        <div className="text-center"><div className="text-5xl mb-2">⚡</div><h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1><p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p></div>
+        <div>
+          <label className="text-sm font-bold text-gray-700 block mb-3">Select your team</label>
+          <div className="grid grid-cols-2 gap-2">
+            {TEAMS.map(t => { const col = teamColor(t); return <button key={t} onClick={() => setTeam(t)} className={`py-3 px-2 rounded-xl border-2 text-sm font-black transition-all ${team === t ? col.light : "border-gray-200 text-gray-400 hover:border-gray-300"}`}>{t}</button>; })}
+          </div>
+          {team && <p className="text-center text-sm text-gray-500 mt-3"><span className={`px-3 py-1 rounded-full font-semibold ${teamColor(team).badge}`}>{team} ✓</span></p>}
+        </div>
+        <div>
+          <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
+          <div className="grid grid-cols-2 gap-3">
+            {[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji}) => (
+              <button key={d} onClick={() => setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day === d ? "bg-indigo-50 border-indigo-500 text-indigo-700" : "border-gray-200 text-gray-400 hover:border-gray-300"}`}>
+                <div className="text-2xl mb-1">{emoji}</div><div className="font-bold">{label}</div><div className="text-xs opacity-70">{sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <button onClick={() => team && day && onEnter(team, day)} disabled={!team || !day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">Enter the Hub →</button>
+      </div>
+    </div>
+  );
+}
+
+function SubmitTab({ user, onSave, syncStatus }) {
+  const [form, setForm]         = useState(EMPTY_REQ);
+  const [done, setDone]         = useState(false);
+  const [translating, setTrans] = useState(false);
+  const f = (k, v) => setForm(p => ({...p, [k]: v}));
+  const canSubmit = !!(form.problem?.trim() && form.roleplayExample?.trim() && form.frequency && form.definition?.trim());
+  const missing = [!form.problem?.trim() && "problem", !form.roleplayExample?.trim() && "roleplay example", !form.frequency && "frequency", !form.definition?.trim() && "definition of solved"].filter(Boolean);
+  const submit = async () => {
+    if (!canSubmit) return;
+    setTrans(true);
+    const req = {...form, id: Date.now(), team: user.team, ts: new Date().toISOString(), cluster: "Unclustered", category: "", bucket: ""};
+    try {
+      const translated = await translateToEnglish({ problem: req.problem, roleplayExample: req.roleplayExample, workaround: req.workaround, definition: req.definition });
+      await onSave({...req, ...translated});
+    } catch { await onSave(req); }
+    setTrans(false);
+    setForm(EMPTY_REQ); setDone(true); setTimeout(() => setDone(false), 3500);
+  };
+  const ta  = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition-colors placeholder-gray-300";
+  const sel = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
+  const steps = [{l:"Problem",ok:!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround?.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition?.trim()}];
+  return (
+    <div className="space-y-4">
+      {done && (
+        <div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999}} className="bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl flex items-center gap-2">
+          ✅ Saved to Google Sheets! Add another one.
+        </div>
+      )}
+      <div className="bg-white rounded-xl border px-4 py-3 flex items-center gap-2 flex-wrap">
+        {steps.map((s,i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            {i > 0 && <div className="w-4 h-px bg-gray-200" />}
+            <div className={`flex items-center gap-1 text-xs font-semibold ${s.ok ? "text-indigo-600" : "text-gray-400"}`}>
+              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${s.ok ? "bg-indigo-600 text-white" : "bg-gray-100"}`}>{s.ok ? "✓" : i+1}</div>{s.l}
+            </div>
+          </div>
+        ))}
+        <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus} /><span className="text-xs text-gray-400 italic">✨ Auto-translated</span></span>
+      </div>
+      <Section step="1" bgColor="bg-indigo-700" emoji="🔍" label="The Problem" sublabel="Capture what happened while it's fresh. Write in any language.">
+        <Field label="What broke, slowed down or created risk?" required tipKey="problem"><textarea className={ta} rows={2} value={form.problem} onChange={e => f("problem", e.target.value)} placeholder="e.g. Editors don't know the required video format until after they've finished the cut." /></Field>
+        <Field label="What happened exactly in the roleplay?" required tipKey="roleplay"><textarea className={ta} rows={4} value={form.roleplayExample} onChange={e => f("roleplayExample", e.target.value)} placeholder="e.g. PM asked the client about aspect ratio in Slack. No response for 20 min..." /></Field>
+        <Field label="How often does this happen in real production?" required tipKey="frequency">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {FREQUENCIES.map(fr => { const m = FREQ_META[fr]; return (
+              <button key={fr} onClick={() => f("frequency", fr)} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all ${form.frequency === fr ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-200 text-gray-600 hover:border-indigo-300"}`}>
+                <span className="text-lg">{m.emoji}</span><span className="text-xs font-bold">{fr}</span><span className={`text-xs ${form.frequency === fr ? "text-indigo-200" : "text-gray-400"}`}>{m.desc}</span>
+              </button>
+            ); })}
+          </div>
+        </Field>
+        <Field label="Where in the pipeline does this happen?" tipKey="pipelineStage">
+          <select className={sel} value={form.pipelineStage} onChange={e => f("pipelineStage", e.target.value)}><option value="">Select a stage…</option>{PIPELINE_STAGES.map(s => <option key={s}>{s}</option>)}</select>
+        </Field>
+      </Section>
+      <Section step="2" bgColor="bg-rose-600" emoji="💥" label="The Impact" sublabel="Who suffers and what is it costing right now?">
+        <Field label="Who feels the pain directly?" tipKey="stakeholders"><MultiChips options={STAKEHOLDERS} selected={form.stakeholders} onChange={v => f("stakeholders", v)} /></Field>
+        <Field label="What's the real cost of not fixing this?" tipKey="consequences"><MultiChips options={CONSEQUENCES} selected={form.consequences} onChange={v => f("consequences", v)} /></Field>
+        <Field label="How is the team handling this today?" tipKey="workaround"><textarea className={ta} rows={2} value={form.workaround} onChange={e => f("workaround", e.target.value)} placeholder="e.g. Editor asks on Slack and waits. Sometimes guesses. ~20–45 min lost per project." /></Field>
+      </Section>
+      <Section step="3" bgColor="bg-violet-600" emoji="🤖" label="Agent Potential" sublabel="Could AI handle this step?">
+        <Field label="If we were to automate this, what level makes sense?" tipKey="agentPotential">
+          <div className="space-y-2">
+            {AGENT_POTENTIALS.map(ap => { const m = AGENT_META[ap]; return (
+              <button key={ap} onClick={() => f("agentPotential", ap)} className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${form.agentPotential === ap ? "bg-violet-600 border-violet-600 text-white" : "bg-white border-gray-200 hover:border-violet-300"}`}>
+                <span className="text-xl flex-shrink-0">{m.emoji}</span>
+                <div><p className={`text-sm font-bold ${form.agentPotential === ap ? "text-white" : "text-gray-800"}`}>{ap}</p><p className={`text-xs mt-0.5 leading-snug ${form.agentPotential === ap ? "text-violet-200" : "text-gray-500"}`}>{m.desc}</p></div>
+                {form.agentPotential === ap && <span className="ml-auto text-white text-sm flex-shrink-0">✓</span>}
+              </button>
+            ); })}
+          </div>
+        </Field>
+      </Section>
+      <Section step="4" bgColor="bg-emerald-600" emoji="🎯" label="Definition of Solved" sublabel="The most important question — and the one teams skip most often.">
+        <Field label="How would we know this is fixed?" required tipKey="definition"><textarea className={ta} rows={4} value={form.definition} onChange={e => f("definition", e.target.value)} placeholder="e.g. The brief always arrives at editing with the required format filled in. The editor never has to ask or guess." /></Field>
+      </Section>
+      <button onClick={submit} disabled={!canSubmit || translating} className="w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-md">
+        {translating ? "✨ Translating & saving to Sheets…" : canSubmit ? "Submit Requirement ✓" : "Complete required fields to submit"}
+      </button>
+      {!canSubmit && <p className="text-xs text-center text-gray-400">Still needed: {missing.join(" · ")}</p>}
+    </div>
+  );
+}
+
+function OpportunitiesTab({ reqs, upvotes, scores, user, onUpvote, onScore }) {
+  const [expanded, setExpanded] = useState(null);
+  const [fTeam,  setFTeam]  = useState("All");
+  const [fStage, setFStage] = useState("All");
+  const vid = user.team.toLowerCase().replace(/\s+/g, "-");
+  const getVotes  = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
+  const hasVoted  = id => !!(upvotes[String(id)] || {})[vid];
+  const getMyScore= id => (scores[String(id)] || {})[vid] || {};
+  const getAvg    = id => {
+    const all = Object.values(scores[String(id)] || {});
+    if (!all.length) return { impact:0, frequency:0, risk:0, leverage:0, total:0, voters:0 };
+    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s + (x[f]||0), 0) / v.length : 0; };
+    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
+    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
+  };
+  const filtered = reqs.filter(r => (fTeam==="All" || r.team===fTeam) && (fStage==="All" || r.pipelineStage===fStage));
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center">
+        <span className="text-xs font-semibold text-gray-500">Filter:</span>
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fTeam} onChange={e => setFTeam(e.target.value)}><option value="All">All Teams</option>{TEAMS.map(t => <option key={t}>{t}</option>)}</select>
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fStage} onChange={e => setFStage(e.target.value)}><option value="All">All Stages</option>{PIPELINE_STAGES.map(s => <option key={s}>{s}</option>)}</select>
+        <span className="ml-auto text-xs text-gray-400">{filtered.length} result{filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+      {filtered.length === 0
+        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
+        : filtered.map(r => {
+          const tc = teamColor(r.team); const avg = getAvg(r.id);
+          return (
+            <div key={r.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
+                <div className="flex items-start gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 line-clamp-2">{r.problem}</p>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      <Badge cls={tc.badge}>{r.team}</Badge>
+                      {r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
+                      {r.pipelineStage && <Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
+                      {r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
+                    </div>
+                  </div>
+                  <div className="text-center flex-shrink-0"><div className="text-2xl font-black text-indigo-600">{getVotes(r.id)}</div><div className="text-xs text-gray-400">votes</div>{avg.total>0 && <div className="text-xs font-bold text-indigo-400">{avg.total.toFixed(1)}pts</div>}</div>
+                </div>
+              </div>
+              {expanded === r.id && (
+                <div className="border-t bg-slate-50 p-4 space-y-3">
+                  {r.roleplayExample && <div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">🎭 Roleplay evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                    {r.stakeholders?.length > 0 && <div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders) ? r.stakeholders : [r.stakeholders]).join(", ")}</div>}
+                    {r.consequences?.length > 0 && <div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences) ? r.consequences : [r.consequences]).join(", ")}</div>}
+                  </div>
+                  {r.workaround && <div className="bg-gray-100 rounded-xl p-3 text-xs"><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
+                  {r.definition && <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+                  <div className="bg-white rounded-xl border p-3 space-y-3">
+                    <p className="text-xs font-bold text-gray-700">Rate this requirement:</p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <ScorePicker label="Impact"    emoji="💥" color="blue"   value={getMyScore(r.id).impact||0}    onChange={v => onScore(r.id,"impact",v)} />
+                      <ScorePicker label="Frequency" emoji="🔁" color="orange" value={getMyScore(r.id).frequency||0} onChange={v => onScore(r.id,"frequency",v)} />
+                      <ScorePicker label="Risk"      emoji="⚠️" color="red"    value={getMyScore(r.id).risk||0}      onChange={v => onScore(r.id,"risk",v)} />
+                      <ScorePicker label="Strategic" emoji="🚀" color="indigo" value={getMyScore(r.id).leverage||0}  onChange={v => onScore(r.id,"leverage",v)} />
+                    </div>
+                    {avg.voters > 0 && <div className="text-xs text-gray-400 flex gap-3 pt-1 border-t flex-wrap"><span>{avg.voters} voter{avg.voters!==1?"s":""}</span><span>💥{avg.impact.toFixed(1)}</span><span>🔁{avg.frequency.toFixed(1)}</span><span>⚠️{avg.risk.toFixed(1)}</span><span>🚀{avg.leverage.toFixed(1)}</span></div>}
+                  </div>
+                  <button onClick={() => onUpvote(r.id)} className={`w-full py-2.5 rounded-xl text-sm font-semibold border-2 transition-all ${hasVoted(r.id) ? "bg-indigo-600 text-white border-indigo-600" : "border-indigo-300 text-indigo-600 hover:bg-indigo-50"}`}>
+                    {hasVoted(r.id) ? "✓ Upvoted — click to remove" : "👍 Upvote this requirement"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+function RankingTab({ reqs, upvotes, scores }) {
+  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
+  const getAvg   = id => {
+    const all = Object.values(scores[String(id)] || {});
+    if (!all.length) return { impact:0, frequency:0, risk:0, leverage:0, total:0, voters:0 };
+    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0), 0)/v.length : 0; };
+    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
+    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
+  };
+  const composite = r => getVotes(r.id)*2 + getAvg(r.id).total;
+  const ranked = [...reqs].map(r => ({...r, comp:composite(r), avg:getAvg(r.id)})).sort((a,b) => b.comp - a.comp);
+  const max = ranked[0]?.comp || 1;
+  const medals = ["🥇","🥈","🥉"];
+  const barCols = ["bg-yellow-400","bg-gray-300","bg-orange-400"];
+  return (
+    <div className="space-y-4">
+      <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700"><strong>Score</strong> = Upvotes × 2 + avg(Impact + Frequency + Risk + Strategic Leverage).</div>
+      {ranked.length === 0
+        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">🏆</p><p className="text-sm">Nothing to rank yet.</p></div>
+        : ranked.map((r, i) => { const tc = teamColor(r.team); return (
+          <div key={r.id} className={`bg-white rounded-xl border shadow-sm p-4 flex gap-3 items-start ${i < 3 ? "border-l-4 " + ["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i] : ""}`}>
+            <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i] || `#${i+1}`}</div>
+            <div className="flex-1 min-w-0 space-y-2">
+              <p className="text-sm font-semibold text-gray-800 line-clamp-2">{r.problem}</p>
+              <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>
+              <div className="w-full bg-gray-100 rounded-full h-1.5"><div className={`${i < 3 ? barCols[i] : "bg-indigo-400"} h-1.5 rounded-full`} style={{width:`${Math.min(100,(r.comp/max)*100)}%`}} /></div>
+              <div className="flex flex-wrap gap-3 text-xs text-gray-500">
+                <span>👍 {getVotes(r.id)}</span>
+                {r.avg.voters > 0 && <><span>💥{r.avg.impact.toFixed(1)}</span><span>🔁{r.avg.frequency.toFixed(1)}</span><span>⚠️{r.avg.risk.toFixed(1)}</span><span>🚀{r.avg.leverage.toFixed(1)}</span></>}
+                <span className="font-bold text-indigo-600 ml-auto">Score {r.comp.toFixed(1)}</span>
+              </div>
+            </div>
+          </div>
+        ); })}
+    </div>
+  );
+}
+
+function ReadOutTab({ reqs, upvotes, scores }) {
+  const [activeTeam, setActiveTeam] = useState(TEAMS[0]);
+  const [cursor, setCursor]         = useState(0);
+  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
+  const getAvg   = id => {
+    const all = Object.values(scores[String(id)] || {});
+    if (!all.length) return { total:0, voters:0, impact:0, frequency:0, risk:0, leverage:0 };
+    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0),0)/v.length : 0; };
+    return { impact:avg("impact"), frequency:avg("frequency"), risk:avg("risk"), leverage:avg("leverage"), total:avg("impact")+avg("frequency")+avg("risk")+avg("leverage"), voters:all.length };
+  };
+  const composite   = r => getVotes(r.id)*2 + getAvg(r.id).total;
+  const activeTeams = [...new Set(reqs.map(r => r.team))];
+  const teamReqs    = reqs.filter(r => r.team === activeTeam).map(r => ({...r, comp:composite(r)})).sort((a,b) => b.comp-a.comp).slice(0,7);
+  const current     = teamReqs[cursor];
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">
+        {activeTeams.map(t => { const tc = teamColor(t); return <button key={t} onClick={() => { setActiveTeam(t); setCursor(0); }} className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all ${activeTeam===t ? tc.light : "border-gray-200 text-gray-500"}`}>{t}</button>; })}
+      </div>
+      {teamReqs.length === 0
+        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements from {activeTeam} yet.</p></div>
+        : <>
+          {current && (
+            <div className="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4 min-h-64">
+              <div className="flex items-center justify-between"><Badge cls={teamColor(current.team).badge}>{current.team}</Badge><span className="text-xs font-bold text-gray-400">{cursor+1} / {teamReqs.length}</span></div>
+              <p className="text-xl font-black text-gray-900 leading-snug">{current.problem}</p>
+              <div className="flex flex-wrap gap-2 items-center">{current.frequency && <div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]?.emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}{current.agentPotential && <Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}</div>
+              {current.roleplayExample && <div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">🎭 Roleplay evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
+              {current.definition && <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
+              <div className="flex gap-4 text-xs text-gray-500 pt-2 border-t"><span>👍 {getVotes(current.id)} votes</span>{getAvg(current.id).voters > 0 && <span>Score {composite(current).toFixed(1)}</span>}</div>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <button onClick={() => setCursor(c => Math.max(0,c-1))} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button>
+            <button onClick={() => setCursor(c => Math.min(teamReqs.length-1,c+1))} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button>
+          </div>
+          <div className="space-y-1">
+            {teamReqs.map((r,i) => <button key={r.id} onClick={() => setCursor(i)} className={`w-full text-left px-4 py-2.5 rounded-xl text-xs transition-all flex items-center gap-3 ${cursor===i ? "bg-indigo-50 border border-indigo-200" : "hover:bg-gray-50"}`}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={`font-semibold flex-1 ${cursor===i ? "text-indigo-700" : "text-gray-700"}`}>{r.problem}</span><span className="text-gray-400">{r.frequency}</span></button>)}
+          </div>
+        </>
+      }
+    </div>
+  );
+}
+
+function SynthesisTab({ reqs, upvotes, scores, onUpdateReq }) {
+  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
+  const getAvg   = id => {
+    const all = Object.values(scores[String(id)] || {});
+    if (!all.length) return { total:0, voters:0, impact:0, frequency:0, risk:0, leverage:0 };
+    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0),0)/v.length : 0; };
+    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
+    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
+  };
+  const composite  = r => getVotes(r.id)*2 + getAvg(r.id).total;
+  const autoBucket = c => c >= 12 ? "Must-fix" : c >= 7 ? "Scale enabler" : "Strategic bet";
+  const ranked = [...reqs].map(r => ({...r, comp:composite(r)})).sort((a,b) => b.comp-a.comp);
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border p-4 text-sm text-gray-600 space-y-1"><p className="font-bold text-gray-800">Facilitator view — Colo / Ale</p><p className="text-xs">Assign each requirement to a cluster and category. Changes sync to Google Sheets in real time.</p></div>
+      {CLUSTERS.map(cluster => {
+        const items = ranked.filter(r => r.cluster === cluster || (cluster === "Unclustered" && !r.cluster));
+        if (!items.length) return null;
+        return (
+          <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+            <div className="bg-slate-700 px-4 py-3 flex justify-between items-center"><h3 className="font-bold text-white text-sm">🗂️ {cluster}</h3><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{items.length}</span></div>
+            <div className="divide-y">{items.map(r => {
+              const tc = teamColor(r.team); const suggested = autoBucket(r.comp);
+              return (
+                <div key={r.id} className="p-4 space-y-3">
+                  <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+                  <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}<Badge cls="bg-gray-100 text-gray-600">Score {r.comp.toFixed(1)}</Badge></div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Cluster</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.cluster||"Unclustered"} onChange={e => onUpdateReq(r.id,{cluster:e.target.value})}>{CLUSTERS.map(c => <option key={c}>{c}</option>)}</select></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Category</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.category||""} onChange={e => onUpdateReq(r.id,{category:e.target.value})}><option value="">—</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Bucket <span className="text-gray-300 font-normal">(auto: {suggested})</span></label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||""} onChange={e => onUpdateReq(r.id,{bucket:e.target.value})}><option value="">auto</option>{BUCKETS.map(b => <option key={b}>{b}</option>)}</select></div>
+                  </div>
+                  {r.category && <div className="text-xs text-gray-400 italic">{CAT_META[r.category]?.desc}</div>}
+                </div>
+              );
+            })}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EngineeringTab({ reqs, epics, onSaveEpic }) {
+  const [view,        setView]    = useState("board");
+  const [editing,     setEditing] = useState(null);
+  const [form,        setForm]    = useState(null);
+  const [aiLoading,   setAiLoad]  = useState(false);
+  const [translating, setTrans]   = useState(false);
+  const [showPicker,  setPicker]  = useState(false);
+  const [detailEpic,  setDetail]  = useState(null);
+  const f = (k, v) => setForm(p => ({...p, [k]: v}));
+  const startNew  = () => { setForm({...EMPTY_EPIC, tickets:[]}); setEditing("new"); setView("form"); };
+  const startEdit = ep => { setForm({...ep}); setEditing(ep.id); setView("form"); };
+  const openDetail= ep => { setDetail(ep); setView("detail"); };
+  const generateTickets = async () => {
+    if (!form.title || !form.reqIds.length) return;
+    setAiLoad(true);
+    const linkedReqs = reqs.filter(r => form.reqIds.includes(r.id));
+    const reqSummary = linkedReqs.map(r => `- Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround today: ${r.workaround||"n/a"}\n  Affected: ${r.stakeholders?.join(", ")||"unknown"}\n  Pipeline stage: ${r.pipelineStage||"n/a"}`).join("\n");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1200,
+          messages: [{ role:"user", content:`You are a senior PM at an AI-powered ad production platform. Generate 2-4 lean, concrete Jira-ready user stories for this epic.\n\nEpic: ${form.title}\nDescription: ${form.description||"n/a"}\nStack area: ${form.stackArea||"n/a"}\n\nRequirements:\n${reqSummary}\n\nRules: English only. Each ticket independent. Format: JSON array, each item: title, role, goal, acs (3-4 Given/When/Then strings). Respond ONLY with the JSON array.` }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.find(c => c.type==="text")?.text || "[]";
+      setForm(p => ({...p, tickets: JSON.parse(text.replace(/```json|```/g,"").trim())}));
+    } catch (e) { console.error(e); }
+    setAiLoad(false);
+  };
+  const save = async () => {
+    if (!form.title?.trim()) return;
+    setTrans(true);
+    const translated = await translateToEnglish({ title:form.title, description:form.description||"", tradeoffs:form.tradeoffs||"" });
+    setTrans(false);
+    const ep = editing === "new" ? {...form, ...translated, id:Date.now()} : {...form, ...translated, id:editing};
+    onSaveEpic(ep); setView("board"); setEditing(null); setForm(null);
+  };
+  const ta  = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 resize-none";
+  const sel = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 bg-white";
+  const inp = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500";
+
+  if (view === "detail" && detailEpic) {
+    const ep = epics.find(e => e.id === detailEpic.id) || detailEpic;
+    const linkedReqs = reqs.filter(r => ep.reqIds?.includes(r.id));
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3"><button onClick={() => setView("board")} className="text-xs text-gray-500 hover:text-gray-800">← Board</button><button onClick={() => startEdit(ep)} className="ml-auto text-xs text-indigo-500 hover:underline">✏️ Edit</button></div>
+        <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3">
+          <h2 className="text-lg font-black text-gray-900">{ep.title}</h2>
+          <div className="flex flex-wrap gap-2">{ep.sizing&&<Badge cls={sizingColor(ep.sizing)}>{ep.sizing}</Badge>}{ep.category&&<Badge cls={catBadge(ep.category)}>{ep.category}</Badge>}{ep.stackArea&&<Badge cls="bg-gray-100 text-gray-600">{ep.stackArea}</Badge>}{ep.bucket&&<Badge cls={buckBadge(ep.bucket)}>{ep.bucket}</Badge>}{ep.assignee&&<Badge cls="bg-slate-100 text-slate-700">👤 {ep.assignee}</Badge>}</div>
+          {ep.description && <p className="text-sm text-gray-600 leading-relaxed">{ep.description}</p>}
+          {ep.tradeoffs && <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3"><p className="text-xs font-bold text-amber-700 mb-1">⚠️ Trade-offs</p><p className="text-sm text-amber-800">{ep.tradeoffs}</p></div>}
+        </div>
+        {linkedReqs.length > 0 && <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3"><p className="text-sm font-bold text-gray-700">🔗 Linked Requirements ({linkedReqs.length})</p>{linkedReqs.map(r => <div key={r.id} className="border rounded-xl p-3 space-y-1"><p className="text-xs font-semibold text-gray-800">{r.problem}</p><div className="flex flex-wrap gap-1"><Badge cls={teamColor(r.team).badge}>{r.team}</Badge>{r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>{r.definition&&<p className="text-xs text-emerald-700 italic">🎯 {r.definition}</p>}</div>)}</div>}
+        {ep.tickets?.length > 0 && <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3"><p className="text-sm font-bold text-gray-700">🎫 Tickets ({ep.tickets.length})</p>{ep.tickets.map((t,i) => <div key={i} className="border-2 border-gray-100 rounded-xl p-4 space-y-2"><div className="flex items-center gap-2"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded">T{i+1}</span><p className="text-sm font-bold text-gray-800">{t.title}</p></div>{t.role&&t.goal&&<p className="text-xs text-gray-500">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}{t.acs?.filter(a=>a).length>0&&<div className="space-y-1 pt-1">{t.acs.filter(a=>a).map((ac,ai) => <div key={ai} className="flex gap-2 items-start"><span className="text-green-500 mt-0.5 flex-shrink-0">✓</span><p className="text-xs text-gray-600">{ac}</p></div>)}</div>}</div>)}</div>}
+      </div>
+    );
+  }
+  if (view === "form" && form) return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3"><button onClick={() => { setView("board"); setEditing(null); setForm(null); }} className="text-xs text-gray-500 hover:text-gray-800">← Board</button><h2 className="text-base font-bold text-gray-800">{editing==="new"?"New Epic":"Edit Epic"}</h2></div>
+      <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-4">
+        <div><label className="text-sm font-bold text-gray-700">Epic Title *</label><input className={`${inp} mt-1`} value={form.title} onChange={e => f("title",e.target.value)} placeholder="e.g. Mandatory brief field validation at handoff" /></div>
+        <div><label className="text-sm font-bold text-gray-700">Description</label><textarea className={`${ta} mt-1`} rows={3} value={form.description} onChange={e => f("description",e.target.value)} placeholder="What problem does this epic solve?" /></div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="text-sm font-bold text-gray-700">Stack Area</label><select className={`${sel} mt-1`} value={form.stackArea} onChange={e => f("stackArea",e.target.value)}><option value="">Where does it live?</option>{STACK_AREAS.map(s => <option key={s}>{s}</option>)}</select></div>
+          <div><label className="text-sm font-bold text-gray-700">Sizing</label><select className={`${sel} mt-1`} value={form.sizing} onChange={e => f("sizing",e.target.value)}><option value="">Rough size…</option>{SIZINGS.map(s => <option key={s}>{s}</option>)}</select></div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div><label className="text-sm font-bold text-gray-700">Category</label><select className={`${sel} mt-1`} value={form.category} onChange={e => f("category",e.target.value)}><option value="">Select…</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+          <div><label className="text-sm font-bold text-gray-700">Bucket</label><select className={`${sel} mt-1`} value={form.bucket} onChange={e => f("bucket",e.target.value)}><option value="">Select…</option>{BUCKETS.map(b => <option key={b}>{b}</option>)}</select></div>
+        </div>
+        <div><label className="text-sm font-bold text-gray-700">Assignee</label><select className={`${sel} mt-1`} value={form.assignee} onChange={e => f("assignee",e.target.value)}><option value="">Assign to engineer…</option>{ENGINEERS.map(e => <option key={e}>{e}</option>)}</select></div>
+        <div><label className="text-sm font-bold text-gray-700">Trade-offs</label><textarea className={`${ta} mt-1`} rows={2} value={form.tradeoffs} onChange={e => f("tradeoffs",e.target.value)} placeholder="What are we giving up or risking?" /></div>
+        <div>
+          <div className="flex items-center justify-between mb-2"><label className="text-sm font-bold text-gray-700">Linked Requirements ({form.reqIds.length})</label><button onClick={() => setPicker(p => !p)} className="text-xs text-indigo-600 hover:underline">{showPicker?"Hide":"+ Add"}</button></div>
+          {showPicker && <div className="border rounded-xl overflow-hidden max-h-48 overflow-y-auto">{reqs.map(r => <label key={r.id} className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 ${form.reqIds.includes(r.id)?"bg-indigo-50":""}`}><input type="checkbox" checked={form.reqIds.includes(r.id)} onChange={e => f("reqIds", e.target.checked ? [...form.reqIds,r.id] : form.reqIds.filter(x=>x!==r.id))} className="mt-0.5 flex-shrink-0"/><div className="min-w-0"><p className="text-xs font-semibold text-gray-800 line-clamp-1">{r.problem}</p><span className="text-xs text-gray-400">{r.team}</span></div></label>)}</div>}
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div><p className="text-sm font-bold text-gray-800">Tickets</p><p className="text-xs text-gray-400">AI generates from linked requirements.</p></div>
+          <button onClick={generateTickets} disabled={aiLoading||!form.title||!form.reqIds.length} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-40">{aiLoading ? <span className="animate-pulse">Generating…</span> : <><span>✨</span><span>AI suggest</span></>}</button>
+        </div>
+        {form.tickets.map((t, ti) => (
+          <div key={ti} className="border-2 border-gray-100 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between"><span className="text-xs font-black text-gray-400">TICKET {ti+1}</span><button onClick={() => f("tickets", form.tickets.filter((_,i)=>i!==ti))} className="text-xs text-red-400">Remove</button></div>
+            <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.title} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],title:e.target.value};f("tickets",ts);}} placeholder="Title"/>
+            <div className="grid grid-cols-2 gap-2">
+              <input className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.role} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],role:e.target.value};f("tickets",ts);}} placeholder="Role"/>
+              <input className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.goal} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],goal:e.target.value};f("tickets",ts);}} placeholder="Goal"/>
+            </div>
+            {(t.acs||[]).map((ac,ai) => <div key={ai} className="flex gap-2"><span className="text-xs text-gray-400 mt-2.5">AC{ai+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={ac} onChange={e=>{const ts=[...form.tickets];const acs=[...ts[ti].acs];acs[ai]=e.target.value;ts[ti]={...ts[ti],acs};f("tickets",ts);}} placeholder="Given… When… Then…"/></div>)}
+          </div>
+        ))}
+        <button onClick={() => f("tickets",[...form.tickets,{...EMPTY_TICKET,acs:["","",""]}])} className="w-full py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-xs text-gray-400 hover:border-indigo-300">+ Add ticket manually</button>
+      </div>
+      <button onClick={save} disabled={!form.title?.trim()||translating} className="w-full bg-indigo-600 text-white rounded-xl py-3.5 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-md">{translating?"Saving…":"Save Epic ✓"}</button>
+    </div>
+  );
+  const bucketGroups = {"Must-fix":epics.filter(e=>e.bucket==="Must-fix"),"Scale enabler":epics.filter(e=>e.bucket==="Scale enabler"),"Strategic bet":epics.filter(e=>e.bucket==="Strategic bet"),"Unassigned":epics.filter(e=>!e.bucket)};
+  const bucketStyles = {"Must-fix":{header:"bg-rose-600",icon:"🔥"},"Scale enabler":{header:"bg-amber-500",icon:"📈"},"Strategic bet":{header:"bg-indigo-600",icon:"🚀"},"Unassigned":{header:"bg-gray-500",icon:"📋"}};
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between"><div><h2 className="text-base font-bold text-gray-800">⚙️ Engineering Board</h2><p className="text-xs text-gray-400">{epics.length} epics · {epics.reduce((s,e)=>s+(e.tickets?.length||0),0)} tickets</p></div><button onClick={startNew} className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700">+ New Epic</button></div>
+      {epics.length === 0 ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">⚙️</p><p className="text-sm">No epics yet.</p></div>
+        : Object.entries(bucketGroups).map(([bucket, items]) => {
+          if (!items.length) return null;
+          const bs = bucketStyles[bucket];
+          return (
+            <div key={bucket} className="rounded-2xl border shadow-sm overflow-hidden">
+              <div className={`${bs.header} px-4 py-3 flex items-center justify-between`}><span className="text-sm font-black text-white">{bs.icon} {bucket}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{items.length}</span></div>
+              <div className="bg-white divide-y">{items.map(ep => (
+                <div key={ep.id} className="p-4 hover:bg-gray-50 flex items-start gap-3">
+                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => openDetail(ep)}>
+                    <p className="text-sm font-bold text-gray-800">{ep.title}</p>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {ep.sizing&&<Badge cls={sizingColor(ep.sizing)}>{ep.sizing.split("–")[0].trim()}</Badge>}
+                      {ep.category&&<Badge cls={catBadge(ep.category)}>{ep.category}</Badge>}
+                      {ep.assignee&&<Badge cls="bg-slate-100 text-slate-700">👤 {ep.assignee}</Badge>}
+                      {ep.tickets?.length>0&&<Badge cls="bg-indigo-50 text-indigo-600">🎫 {ep.tickets.length}</Badge>}
+                    </div>
+                  </div>
+                  <button onClick={() => startEdit(ep)} className="text-xs text-indigo-400 hover:text-indigo-600">Edit</button>
+                </div>
+              ))}</div>
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+function App() {
+  const [user,       setUser]    = useState(null);
+  const [day,        setDay]     = useState(1);
+  const [tab,        setTab]     = useState(0);
+  const [reqs,       setReqs]    = useState([]);
+  const [scores,     setScores]  = useState({});
+  const [upvotes,    setUpvotes] = useState({});
+  const [epics,      setEpics]   = useState([]);
+  const [loading,    setLoading] = useState(true);
+  const [syncStatus, setSync]    = useState("idle");
+  const [lastRefresh,setRefresh] = useState(null);
+
+  const loadAll = async () => {
+    const [reqRows, epicRows, su] = await Promise.all([gsGet("requirements"), gsGet("epics"), loadScoresUpvotes()]);
+    setReqs(reqRows); setEpics(epicRows); setScores(su.scores); setUpvotes(su.upvotes);
+    setRefresh(new Date());
+  };
+
+  useEffect(() => { loadAll().finally(() => setLoading(false)); }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const iv = setInterval(loadAll, 30000);
+    return () => clearInterval(iv);
+  }, [user]);
+
+  const addReq = async req => {
+    setSync("syncing");
+    try {
+      await gsUpsert("requirements", req);
+      await loadAll();
+      setSync("ok"); setTimeout(() => setSync("idle"), 2500);
+    } catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  };
+
+  const updateReq = async (id, patch) => {
+    const updated = reqs.map(r => r.id === id ? {...r,...patch} : r);
+    setReqs(updated);
+    const full = updated.find(r => r.id === id);
+    setSync("syncing");
+    try { await gsUpsert("requirements", full); setSync("ok"); setTimeout(() => setSync("idle"), 2500); }
+    catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  };
+
+  const toggleUpvote = async id => {
+    const vid = user.team.toLowerCase().replace(/\s+/g,"-");
+    const sid = String(id);
+    const cur = upvotes[sid] || {};
+    const next = { ...upvotes, [sid]: cur[vid] ? {...cur} : {...cur, [vid]:true} };
+    if (cur[vid]) delete next[sid][vid];
+    setUpvotes(next);
+    await saveScoresUpvotes(sid, scores, next);
+  };
+
+  const setScore = async (id, field, val) => {
+    const vid = user.team.toLowerCase().replace(/\s+/g,"-");
+    const sid = String(id);
+    const next = { ...scores, [sid]: { ...(scores[sid]||{}), [vid]: { ...(scores[sid]?.[vid]||{}), [field]:val } } };
+    setScores(next);
+    await saveScoresUpvotes(sid, next, upvotes);
+  };
+
+  const saveEpic = async ep => {
+    const updated = epics.find(e=>e.id===ep.id) ? epics.map(e=>e.id===ep.id?ep:e) : [...epics,ep];
+    setEpics(updated);
+    setSync("syncing");
+    try { await gsUpsert("epics", ep); setSync("ok"); setTimeout(() => setSync("idle"), 2500); }
+    catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  };
+
+  if (loading) return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}>
+      <div style={{fontSize:"2.5rem"}}>⚡</div>
+      <p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p>
+    </div>
+  );
+  if (!user) return <EntryScreen onEnter={(t,d) => { setUser({team:t}); setDay(d); setTab(0); }} />;
+
+  const tc          = teamColor(user.team);
+  const tabs        = day === 1 ? TABS_D1 : TABS_D2;
+  const activeTeams = [...new Set(reqs.map(r => r.team))].length;
+  const totalVotes  = Object.values(upvotes).reduce((s,v) => s + Object.values(v||{}).filter(Boolean).length, 0);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50">
+      <div className="bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shadow-lg">
+        <div>
+          <h1 className="text-xl font-bold">⚡ Offsite Hub</h1>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900"}`}>Day {day}</span>
+            <p className="text-indigo-300 text-xs">{day===1?"Roleplay + Capture":"Synthesis + Engineering"}</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${tc.bg} text-white`}>{user.team}</span>
+          <p className="text-indigo-300 text-xs mt-1 cursor-pointer hover:text-white" onClick={() => setUser(null)}>Switch</p>
+        </div>
+      </div>
+      <div className="bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center">
+        <span>📌 <strong className="text-gray-800">{reqs.length}</strong> requirements</span>
+        <span>🗳️ <strong className="text-gray-800">{totalVotes}</strong> upvotes</span>
+        <span>🏷️ <strong className="text-gray-800">{activeTeams}</strong> teams</span>
+        {day===2 && <span>⚙️ <strong className="text-gray-800">{epics.length}</strong> epics</span>}
+        <span className="flex items-center gap-1.5"><SyncBadge status={syncStatus} />{syncStatus==="idle" && lastRefresh && <span className="text-gray-300">Synced {lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}</span>
+        <button onClick={() => setDay(d => d===1?2:1)} className="ml-auto text-indigo-500 hover:underline">Switch to Day {day===1?2:1} →</button>
+      </div>
+      <div className="flex border-b bg-white px-4">
+        {tabs.map((t,i) => <button key={i} onClick={() => setTab(i)} className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{t}</button>)}
+      </div>
+      <div className="max-w-3xl mx-auto p-5">
+        {day===1 && tab===0 && <SubmitTab user={user} onSave={addReq} syncStatus={syncStatus} />}
+        {day===1 && tab===1 && <OpportunitiesTab reqs={reqs} upvotes={upvotes} scores={scores} user={user} onUpvote={toggleUpvote} onScore={setScore} />}
+        {day===1 && tab===2 && <RankingTab reqs={reqs} upvotes={upvotes} scores={scores} />}
+        {day===2 && tab===0 && <ReadOutTab reqs={reqs} upvotes={upvotes} scores={scores} />}
+        {day===2 && tab===1 && <SynthesisTab reqs={reqs} upvotes={upvotes} scores={scores} onUpdateReq={updateReq} />}
+        {day===2 && tab===2 && <EngineeringTab reqs={reqs} epics={epics} onSaveEpic={saveEpic} />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
