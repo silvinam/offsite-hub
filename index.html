@@ -391,30 +391,64 @@ function ReadOutTab({reqs}){
 
 // ── Synthesis tab ─────────────────────────────────────────────
 function SynthesisTab({reqs,onUpdateReq}){
+  const [expanded,setExpanded]=useState(null);
   const getScore=r=>((r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0));
   const ranked=[...reqs].sort((a,b)=>getScore(b)-getScore(a));
-  const allClusters=[...BASE_CLUSTERS];
-  const allCategories=[...BASE_CATEGORIES];
   const autoBucket=s=>s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet";
   return(
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border p-4"><p className="font-bold text-gray-800 text-sm">Facilitator view — Colo / Ale</p><p className="text-xs text-gray-500 mt-0.5">Assign cluster and category. Changes sync in real time.</p></div>
-      {ranked.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:ranked.map(r=>{
-        const tc=teamColor(r.team);const score=getScore(r);const suggested=autoBucket(score);
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-4"><p className="font-bold text-gray-800 text-sm">Facilitator view — Colo / Ale</p><p className="text-xs text-gray-500 mt-0.5">Requirements ordered by score. Expand each one to see full details before assigning cluster and category.</p></div>
+      {ranked.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:ranked.map((r,idx)=>{
+        const tc=teamColor(r.team);const score=getScore(r);const suggested=autoBucket(score);const isOpen=expanded===r.id;
         return(
-          <div key={r.id} className="bg-white rounded-xl border shadow-sm p-4 space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-                <div className="flex flex-wrap gap-1.5 mt-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>
+          <div key={r.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+            {/* Header row — always visible */}
+            <div className="p-4 flex items-start gap-3 cursor-pointer hover:bg-gray-50" onClick={()=>setExpanded(isOpen?null:r.id)}>
+              <div className="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-black text-indigo-600">#{idx+1}</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  <Badge cls={tc.badge}>{r.team}</Badge>
+                  {r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}
+                  {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
+                  {r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
+                  {r.cluster&&r.cluster!=="Unclustered"&&<Badge cls="bg-slate-100 text-slate-600">🗂️ {r.cluster}</Badge>}
+                  {r.category&&<Badge cls={catBadge(r.category)}>{r.category}</Badge>}
+                </div>
               </div>
-              <div className="text-center flex-shrink-0 bg-indigo-50 rounded-xl px-3 py-2"><div className="text-2xl font-black text-indigo-600">{score}</div><div className="text-xs text-gray-400">score</div></div>
+              <div className="flex-shrink-0 text-center bg-indigo-50 rounded-xl px-3 py-1.5 min-w-14">
+                <div className="text-2xl font-black text-indigo-600 leading-tight">{score}</div>
+                <div className="text-xs text-gray-400">score</div>
+                {score>0&&<div className="flex gap-0.5 justify-center mt-1 text-xs text-gray-400"><span>💥{r.impactScore||0}</span><span>·</span><span>🔁{r.frequencyScore||0}</span><span>·</span><span>⚠️{r.riskScore||0}</span><span>·</span><span>🚀{r.leverageScore||0}</span></div>}
+              </div>
+              <span className="text-gray-300 text-lg flex-shrink-0 mt-0.5">{isOpen?"▲":"▼"}</span>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div><label className="text-xs font-bold text-gray-500 block mb-1">Cluster</label><OtherSelect options={allClusters} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div>
-              <div><label className="text-xs font-bold text-gray-500 block mb-1">Category</label><OtherSelect options={allCategories} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/></div>
-              <div><label className="text-xs font-bold text-gray-500 block mb-1">Bucket <span className="text-gray-300 font-normal">(auto: {suggested})</span></label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||""} onChange={e=>onUpdateReq(r.id,{bucket:e.target.value})}><option value="">auto</option>{BUCKETS.map(b=><option key={b}>{b}</option>)}</select></div>
-            </div>
-            {r.category&&CAT_META[r.category]&&<p className="text-xs text-gray-400 italic">{CAT_META[r.category].desc}</p>}
+
+            {/* Expanded details */}
+            {isOpen&&(
+              <div className="border-t bg-slate-50 p-4 space-y-4">
+                {/* Full requirement info */}
+                {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+                {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border">
+                  {r.pipelineStage&&<div><span className="font-semibold text-gray-500">Pipeline stage: </span><span className="text-gray-700">{r.pipelineStage}</span></div>}
+                  {r.stakeholders?.length>0&&<div><span className="font-semibold text-gray-500">Affected: </span><span className="text-gray-700">{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</span></div>}
+                  {r.consequences?.length>0&&<div><span className="font-semibold text-gray-500">Cost: </span><span className="text-gray-700">{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</span></div>}
+                  {r.workaround&&<div className="col-span-2"><span className="font-semibold text-gray-500">Workaround: </span><span className="text-gray-700">{r.workaround}</span></div>}
+                </div>
+
+                {/* Cluster / Category / Bucket assignment */}
+                <div className="bg-white rounded-xl border p-3 space-y-3">
+                  <p className="text-xs font-bold text-gray-600">Assign</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Cluster</label><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Category</label><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Bucket<br/><span className="text-gray-300 font-normal">auto: {suggested}</span></label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||""} onChange={e=>onUpdateReq(r.id,{bucket:e.target.value})}><option value="">auto</option>{BUCKETS.map(b=><option key={b}>{b}</option>)}</select></div>
+                  </div>
+                  {r.category&&CAT_META[r.category]&&<p className="text-xs text-gray-400 italic">{CAT_META[r.category].desc}</p>}
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
