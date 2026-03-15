@@ -44,15 +44,10 @@ async function translateToEnglish(fields) {
   const toTranslate = Object.entries(fields).filter(([,v]) => v && typeof v === "string" && v.trim());
   if (!toTranslate.length) return fields;
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000,
-        messages: [{ role: "user", content: `Translate the following fields to English. Keep professional tone. Preserve meaning exactly. Respond ONLY with a JSON object with the same keys, translated values. If already English, keep as-is.\n\n${JSON.stringify(Object.fromEntries(toTranslate))}` }]
-      })
-    });
-    const data = await res.json();
-    const text = data.content?.find(c => c.type === "text")?.text || "{}";
-    return { ...fields, ...JSON.parse(text.replace(/```json|```/g, "").trim()) };
+    const url = `${GS_URL}?action=translate&data=${encodeURIComponent(JSON.stringify(Object.fromEntries(toTranslate)))}`;
+    const res = await fetch(url);
+    const translated = await res.json();
+    return { ...fields, ...translated };
   } catch { return fields; }
 }
 
@@ -509,80 +504,79 @@ async function gsJira(epicsPayload) {
 }
 
 function JiraTab({ reqs }) {
-  // step: "select" | "epics" | "tickets" | "pushing" | "done"
-  const [step, setStep]               = useState("select");
+  const [step, setStep]             = useState("select");
   const [selectedReqIds, setSelected] = useState([]);
-  const [epics, setEpics]             = useState([]);
-  const [generatingEpics, setGenEpics]= useState(false);
-  const [generatingTickets, setGenTix]= useState(null); // epic idx being generated
-  const [pushResult, setPushResult]   = useState(null);
+  const [jsonInput, setJsonInput]   = useState("");
+  const [jsonError, setJsonError]   = useState("");
+  const [epics, setEpics]           = useState([]);
+  const [pushResult, setPushResult] = useState(null);
+  const [copied, setCopied]         = useState(false);
 
   const clusterOf = r => r.cluster && r.cluster !== "Unclustered" ? r.cluster : "Unclustered";
   const reqsWithCluster = reqs.filter(r => r.problem);
-
-  // group reqs by cluster for display
   const byCluster = reqsWithCluster.reduce((acc, r) => {
     const c = clusterOf(r); if (!acc[c]) acc[c] = []; acc[c].push(r); return acc;
   }, {});
-
   const toggleReq = id => setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   const toggleAll = () => setSelected(selectedReqIds.length === reqsWithCluster.length ? [] : reqsWithCluster.map(r => r.id));
-
   const selectedReqs = reqsWithCluster.filter(r => selectedReqIds.includes(r.id));
 
-  // ── Step 1: Generate Epics ──
-  const generateEpics = async () => {
-    if (!selectedReqs.length) return;
-    setGenEpics(true);
+  const buildPrompt = () => {
     const reqSummary = selectedReqs.map(r =>
-      `ID:${r.id} | Cluster:${clusterOf(r)} | Problem: ${r.problem} | Definition of solved: ${r.definition||"n/a"} | Agent potential: ${r.agentPotential||"n/a"} | Workaround: ${r.workaround||"n/a"} | Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).join(", ")}`
+      `- ID: ${r.id}\n  Cluster: ${clusterOf(r)}\n  Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}\n  Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).filter(Boolean).join(", ")||"unknown"}`
     ).join("\n");
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2000,
-          messages: [{ role: "user", content: `You are a senior PM at an AI-powered ad production platform (Airpost). Group the following requirements into epics. Multiple requirements can belong to the same epic if they are related. Each epic should have a clear, actionable title and description.\n\nRequirements:\n${reqSummary}\n\nRespond ONLY with a JSON array of epics: [{ title, description, bucket ("Must-fix"|"Scale enabler"|"Strategic bet"), reqIds: [array of requirement IDs that belong to this epic] }]. English only. No markdown.` }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.find(c => c.type === "text")?.text || "[]";
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setEpics(parsed.map((e, i) => ({ ...e, id: Date.now() + i, approved: false, tickets: [] })));
-      setStep("epics");
-    } catch(err) { console.error(err); }
-    setGenEpics(false);
+    return `You are a senior PM at Airpost, an AI-powered ad production platform.
+
+Group the following requirements into Jira epics. Multiple requirements can belong to the same epic if they are related. Be smart about grouping — don't create one epic per requirement if they can be combined.
+
+Requirements:
+${reqSummary}
+
+Respond ONLY with a valid JSON array. No explanation, no markdown, just the raw JSON array:
+[
+  {
+    "title": "Epic title",
+    "description": "Clear description of what this epic solves",
+    "bucket": "Must-fix" | "Scale enabler" | "Strategic bet",
+    "reqIds": [array of requirement IDs covered by this epic],
+    "tickets": [
+      {
+        "title": "Ticket title",
+        "role": "who benefits",
+        "goal": "what they want to achieve",
+        "acs": ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."]
+      }
+    ]
+  }
+]`;
   };
 
-  // ── Step 2: Generate Tickets for an epic ──
-  const generateTickets = async (eIdx) => {
-    setGenTix(eIdx);
-    const epic = epics[eIdx];
-    const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(r.id) || (epic.reqIds||[]).includes(String(r.id)));
-    const reqSummary = epicReqs.map(r =>
-      `- Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}`
-    ).join("\n");
+  const copyAndOpen = async () => {
+    const prompt = buildPrompt();
+    try { await navigator.clipboard.writeText(prompt); } catch {}
+    setCopied(true);
+    setTimeout(() => setCopied(false), 3000);
+    window.open("https://claude.ai", "_blank");
+    setStep("paste");
+  };
+
+  const parseJson = () => {
+    setJsonError("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1500,
-          messages: [{ role: "user", content: `You are a senior PM. Generate 2-4 Jira child tickets (subtasks) for this epic.\n\nEpic: ${epic.title}\nDescription: ${epic.description}\n\nRequirements covered:\n${reqSummary}\n\nRespond ONLY with a JSON array: [{ title, role, goal, acs: ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."] }]. English only. No markdown.` }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.find(c => c.type === "text")?.text || "[]";
-      const tickets = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setEpics(p => p.map((e, i) => i === eIdx ? {...e, tickets} : e));
-    } catch(err) { console.error(err); }
-    setGenTix(null);
+      const parsed = JSON.parse(jsonInput.trim().replace(/```json|```/g, "").trim());
+      if (!Array.isArray(parsed)) throw new Error("Expected a JSON array");
+      setEpics(parsed.map((e, i) => ({ ...e, id: Date.now() + i, approved: false,
+        reqIds: (e.reqIds||[]).map(id => typeof id === "string" ? id : String(id))
+      })));
+      setStep("review");
+    } catch(err) { setJsonError("Invalid JSON — paste exactly what Claude gave you: " + err.message); }
   };
 
   const updateEpic   = (idx, patch) => setEpics(p => p.map((e,i) => i===idx ? {...e,...patch} : e));
   const updateTicket = (eIdx, tIdx, patch) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.map((t,j) => j===tIdx ? {...t,...patch} : t)} : e));
   const removeTicket = (eIdx, tIdx) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.filter((_,j) => j!==tIdx)} : e));
-
   const approvedEpics = epics.filter(e => e.approved);
 
-  // ── Step 3: Push to Jira ──
   const pushToJira = async () => {
     if (!approvedEpics.length) return;
     setStep("pushing");
@@ -609,7 +603,7 @@ function JiraTab({ reqs }) {
             <p className="text-xs text-rose-500 font-mono">{pushResult?.error || "Unknown error"}</p>
           </div>
       }
-      <button onClick={() => { setStep("select"); setSelected([]); setEpics([]); setPushResult(null); }} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
+      <button onClick={() => { setStep("select"); setSelected([]); setEpics([]); setJsonInput(""); setPushResult(null); }} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
     </div>
   );
 
@@ -622,33 +616,30 @@ function JiraTab({ reqs }) {
     </div>
   );
 
-  // ── STEP: EPICS REVIEW ──
-  if (step === "epics") return (
+  // ── REVIEW EPICS ──
+  if (step === "review") return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
         <div>
-          <p className="text-sm font-bold text-gray-800">Step 2 — Review Epics</p>
-          <p className="text-xs text-gray-400">Edit, approve epics, then generate tickets for each.</p>
+          <p className="text-sm font-bold text-gray-800">Step 3 — Review & Approve</p>
+          <p className="text-xs text-gray-400">Edit epics and tickets, then approve what goes to Jira.</p>
         </div>
-        <button onClick={() => setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
+        <button onClick={() => setStep("paste")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
       </div>
-
       {epics.map((epic, eIdx) => {
-        const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(r.id) || (epic.reqIds||[]).includes(String(r.id)));
+        const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(String(r.id)) || (epic.reqIds||[]).includes(r.id));
         return (
           <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved ? "border-emerald-400" : "border-gray-200"}`}>
-            {/* Header */}
             <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved ? "bg-emerald-50" : "bg-gray-50"}`}>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>
                 {epic.bucket && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}
-                <span className="text-xs text-gray-400">{epicReqs.length} req{epicReqs.length!==1?"s":""}</span>
+                <span className="text-xs text-gray-400">{epicReqs.length} req{epicReqs.length!==1?"s":""} · {epic.tickets?.length||0} tickets</span>
               </div>
               <button onClick={() => updateEpic(eIdx, {approved: !epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>
                 {epic.approved ? "✓ Approved" : "Approve"}
               </button>
             </div>
-            {/* Body */}
             <div className="p-4 space-y-3">
               <div>
                 <label className="text-xs font-bold text-gray-500 block mb-1">Title</label>
@@ -658,27 +649,25 @@ function JiraTab({ reqs }) {
                 <label className="text-xs font-bold text-gray-500 block mb-1">Description</label>
                 <textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e => updateEpic(eIdx, {description: e.target.value})} />
               </div>
-              {/* Linked reqs */}
               {epicReqs.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-bold text-gray-500">Linked requirements</p>
-                  {epicReqs.map(r => <div key={r.id} className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0"/>{r.problem}</div>)}
+                  <p className="text-xs font-bold text-gray-400">Linked requirements</p>
+                  {epicReqs.map(r => <div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}
                 </div>
               )}
-              {/* Tickets */}
               {epic.tickets?.length > 0 && (
                 <div className="space-y-2 pt-1 border-t">
-                  <p className="text-xs font-bold text-gray-500 pt-1">Child tickets ({epic.tickets.length})</p>
+                  <p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
                   {epic.tickets.map((t, tIdx) => (
                     <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
                       <div className="flex gap-2 items-center">
                         <span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span>
                         <input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e => updateTicket(eIdx,tIdx,{title:e.target.value})} />
-                        <button onClick={() => removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0">×</button>
+                        <button onClick={() => removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0 leading-none">×</button>
                       </div>
                       {t.role && t.goal && <p className="text-xs text-gray-400 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}
                       <div className="space-y-1">
-                        {(t.acs||[]).map((ac,ai) => (
+                        {(t.acs||[]).map((ac, ai) => (
                           <div key={ai} className="flex gap-2 items-start">
                             <span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span>
                             <input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e => { const acs=[...t.acs]; acs[ai]=e.target.value; updateTicket(eIdx,tIdx,{acs}); }} />
@@ -689,34 +678,66 @@ function JiraTab({ reqs }) {
                   ))}
                 </div>
               )}
-              {/* Generate tickets button */}
-              <button onClick={() => generateTickets(eIdx)} disabled={generatingTickets===eIdx} className="w-full py-2 border-2 border-dashed border-indigo-200 rounded-xl text-xs font-bold text-indigo-500 hover:bg-indigo-50 hover:border-indigo-400 disabled:opacity-40 transition-all">
-                {generatingTickets===eIdx ? "✨ Generating tickets…" : epic.tickets?.length > 0 ? "🔄 Regenerate tickets" : "✨ Generate child tickets"}
-              </button>
             </div>
           </div>
         );
       })}
-
       <div className="sticky bottom-4 pt-2">
         <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl">
-          🚀 Push {approvedEpics.length} approved epic{approvedEpics.length!==1?"s":""} to Jira
+          🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira
         </button>
-        {!approvedEpics.length && <p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to push</p>}
+        {!approvedEpics.length && <p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
       </div>
     </div>
   );
 
-  // ── STEP: SELECT REQUIREMENTS ──
+  // ── PASTE JSON ──
+  if (step === "paste") return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-bold text-gray-800">Step 2 — Paste Claude's response</p>
+          <p className="text-xs text-gray-400">Copy the JSON array Claude gave you and paste it below.</p>
+        </div>
+        <button onClick={() => setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
+      </div>
+      <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-2">
+        <p className="text-xs font-bold text-indigo-700">In Claude.ai:</p>
+        <ol className="text-xs text-indigo-600 space-y-1 list-decimal list-inside">
+          <li>Paste the prompt (Ctrl+V / Cmd+V)</li>
+          <li>Wait for Claude to respond</li>
+          <li>Copy the entire JSON array it returns</li>
+          <li>Come back here and paste it below</li>
+        </ol>
+        <a href="https://claude.ai" target="_blank" className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">
+          Open Claude.ai ↗
+        </a>
+      </div>
+      <div>
+        <label className="text-xs font-bold text-gray-500 block mb-2">Paste JSON here</label>
+        <textarea
+          className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError ? "border-rose-400 bg-rose-50" : "border-gray-200 focus:border-indigo-400"}`}
+          placeholder={'[\n  {\n    "title": "...",\n    "description": "...",\n    ...\n  }\n]'}
+          value={jsonInput}
+          onChange={e => { setJsonInput(e.target.value); setJsonError(""); }}
+        />
+        {jsonError && <p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
+      </div>
+      <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">
+        Parse & Review Epics →
+      </button>
+    </div>
+  );
+
+  // ── SELECT REQUIREMENTS ──
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl border p-4 space-y-1">
         <p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p>
-        <p className="text-xs text-gray-500">Pick the requirements you want to turn into Jira epics. AI will group them intelligently.</p>
+        <p className="text-xs text-gray-500">Pick the requirements you want to turn into Jira epics. We'll build a prompt for Claude to group them.</p>
       </div>
-
       {reqsWithCluster.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet. Submit some in Day 1 first.</p></div>
+        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
         : <>
           <div className="bg-white rounded-xl border p-3 flex items-center justify-between">
             <button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">
@@ -724,7 +745,6 @@ function JiraTab({ reqs }) {
             </button>
             <span className="text-xs text-gray-400">{selectedReqIds.length} of {reqsWithCluster.length} selected</span>
           </div>
-
           {Object.entries(byCluster).map(([cluster, clReqs]) => (
             <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
               <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between">
@@ -736,8 +756,8 @@ function JiraTab({ reqs }) {
                   const tc = teamColor(r.team);
                   const sel = selectedReqIds.includes(r.id);
                   return (
-                    <label key={r.id} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
-                      <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel ? "bg-indigo-600 border-indigo-600" : "border-gray-300"}`} onClick={() => toggleReq(r.id)}>
+                    <div key={r.id} onClick={() => toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
+                      <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel ? "bg-indigo-600 border-indigo-600" : "border-gray-300"}`}>
                         {sel && <span className="text-white text-xs">✓</span>}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -749,17 +769,17 @@ function JiraTab({ reqs }) {
                         </div>
                         {r.definition && <p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
                       </div>
-                    </label>
+                    </div>
                   );
                 })}
               </div>
             </div>
           ))}
-
           <div className="sticky bottom-4 pt-2">
-            <button onClick={generateEpics} disabled={!selectedReqIds.length || generatingEpics} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl transition-all">
-              {generatingEpics ? "✨ Grouping into epics…" : `✨ Generate epics from ${selectedReqIds.length} requirement${selectedReqIds.length!==1?"s":""}`}
+            <button onClick={copyAndOpen} disabled={!selectedReqIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl transition-all">
+              {copied ? "✅ Prompt copied! Claude.ai is opening…" : `📋 Copy prompt & open Claude.ai`}
             </button>
+            {selectedReqIds.length > 0 && !copied && <p className="text-center text-xs text-gray-400 mt-2">Will copy the prompt and open Claude.ai in a new tab</p>}
           </div>
         </>
       }
