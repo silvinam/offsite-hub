@@ -978,9 +978,19 @@ function App() {
   const setScore = async (id, field, val) => {
     const vid = user.team.toLowerCase().replace(/\s+/g,"-");
     const sid = String(id);
-    const next = { ...scores, [sid]: { ...(scores[sid]||{}), [vid]: { ...(scores[sid]?.[vid]||{}), [field]:val } } };
-    setScores(next);
-    await saveScoresUpvotes(sid, next, upvotes);
+    setScores(prev => {
+      const prevReq    = prev[sid] || {};
+      const prevVoter  = prevReq[vid] || {};
+      const next = {
+        ...prev,
+        [sid]: {
+          ...prevReq,
+          [vid]: { ...prevVoter, [field]: val }
+        }
+      };
+      saveScoresUpvotes(sid, next, upvotes);
+      return next;
+    });
   };
 
   const saveEpic = async ep => {
