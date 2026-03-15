@@ -17,30 +17,15 @@ const { useState, useEffect, useRef } = React;
 const GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
 
 async function gsGet(sheet) {
-  try {
-    const res = await fetch(`${GS_URL}?sheet=${encodeURIComponent(sheet)}`);
-    return await res.json();
-  } catch { return []; }
+  try { const res = await fetch(`${GS_URL}?sheet=${encodeURIComponent(sheet)}`); return await res.json(); } catch { return []; }
 }
 async function gsUpsert(sheet, data) {
-  try {
-    const url = `${GS_URL}?action=upsert&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify(data))}`;
-    await fetch(url);
-  } catch {}
+  try { await fetch(`${GS_URL}?action=upsert&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify(data))}`); } catch {}
 }
-async function loadScoresUpvotes() {
-  const rows = await gsGet("scores_upvotes");
-  let scores = {}, upvotes = {};
-  rows.forEach(r => {
-    if (r.scores)  scores[r.id]  = r.scores;
-    if (r.upvotes) upvotes[r.id] = r.upvotes;
-  });
-  return { scores, upvotes };
+async function gsDelete(sheet, id) {
+  try { await fetch(`${GS_URL}?action=delete&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify({id}))}`); } catch {}
 }
-async function saveScoresUpvotes(id, scores, upvotes) {
-  await gsUpsert("scores_upvotes", { id, scores: scores[id] || {}, upvotes: upvotes[id] || {} });
-}
-async function translateToEnglish(fields) {
+async function gsTranslate(fields) {
   const toTranslate = Object.entries(fields).filter(([,v]) => v && typeof v === "string" && v.trim());
   if (!toTranslate.length) return fields;
   try {
@@ -50,6 +35,22 @@ async function translateToEnglish(fields) {
     return { ...fields, ...translated };
   } catch { return fields; }
 }
+async function gsJira(epics) {
+  try {
+    const res = await fetch(`${GS_URL}?action=jira&data=${encodeURIComponent(JSON.stringify(epics))}`);
+    return await res.json();
+  } catch(e) { return { ok: false, error: String(e) }; }
+}
+async function loadScoresUpvotes() {
+  const rows = await gsGet("scores_upvotes");
+  let scores = {}, upvotes = {}, votingClosed = false;
+  rows.forEach(r => {
+    if (r.id === "__voting_closed__") { votingClosed = !!r.scores; return; }
+    if (r.scores)  scores[r.id]  = r.scores;
+    if (r.upvotes) upvotes[r.id] = r.upvotes;
+  });
+  return { scores, upvotes, votingClosed };
+}
 
 const PIPELINE_STAGES = ["Onboarding / Brief","Creative Strategy / Strategy Sheet","Script Generation","Editing","Review","Delivery","Tweaking – Quick Editor","Tweaking – Manual Revision Request","Cross-stage"];
 const STAKEHOLDERS    = ["Customer","Creative","Editors","PMs","Engineering"];
@@ -58,438 +59,362 @@ const FREQUENCIES     = ["Always","Often","Sometimes","Rare but critical"];
 const FREQ_META       = { Always:{emoji:"🔴",desc:"Every project"}, Often:{emoji:"🟠",desc:"Most projects"}, Sometimes:{emoji:"🟡",desc:"Edge cases"}, "Rare but critical":{emoji:"⚪",desc:"Low freq, high impact"} };
 const AGENT_POTENTIALS= ["Assisted by AI","Fully automated","Orchestrated by an agent","Not suitable for AI"];
 const AGENT_META      = {
-  "Assisted by AI":          { emoji:"🤝", desc:"A human still makes the call, but AI drafts, suggests or pre-fills." },
-  "Fully automated":         { emoji:"⚡", desc:"No human needed. AI runs the step end-to-end every time." },
-  "Orchestrated by an agent":{ emoji:"🕸️", desc:"An agent coordinates multiple tools or steps autonomously." },
-  "Not suitable for AI":     { emoji:"🚫", desc:"Requires human judgment, client relationship, or creative intuition." },
+  "Assisted by AI":          {emoji:"🤝",desc:"A human still makes the call, but AI drafts, suggests or pre-fills."},
+  "Fully automated":         {emoji:"⚡",desc:"No human needed. AI runs the step end-to-end every time."},
+  "Orchestrated by an agent":{emoji:"🕸️",desc:"An agent coordinates multiple tools or steps autonomously."},
+  "Not suitable for AI":     {emoji:"🚫",desc:"Requires human judgment, client relationship, or creative intuition."},
 };
-const CLUSTERS   = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered"];
-const CATEGORIES = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture"];
-const CAT_META   = { "Workflow Optimization":{desc:"Incremental process improvement"}, "Agent Enablement":{desc:"Requires data & structure redesign"}, "Structural Re-Architecture":{desc:"Platform-level bet"} };
-const BUCKETS    = ["Must-fix","Scale enabler","Strategic bet"];
-const SIZINGS    = ["S – hours","M – days","L – weeks","XL – months"];
-const STACK_AREAS= ["Auth Service","Airpost / Brief","Dojo","Ad Studio","QC Gallery","SCF / Pathways Library","Cross-platform"];
-const TABS_D1    = ["➕ Submit","📋 Requirements","🏆 Ranking"];
-const TABS_D2    = ["🎤 Read-Out","🗂️ Synthesis","⚙️ Engineering","🚀 → Jira"];
-const TEAMS      = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
-const ENGINEERS  = ["Lu","Vicky M","Ale","Colo","Gaston","Pablo"];
+const BASE_CLUSTERS  = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered","Other"];
+const BASE_CATEGORIES= ["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Other"];
+const CAT_META       = {"Workflow Optimization":{desc:"Incremental process improvement"},"Agent Enablement":{desc:"Requires data & structure redesign"},"Structural Re-Architecture":{desc:"Platform-level bet"}};
+const BUCKETS        = ["Must-fix","Scale enabler","Strategic bet"];
+const SIZINGS        = ["S – hours","M – days","L – weeks","XL – months"];
+const STACK_AREAS    = ["Auth Service","Airpost / Brief","Dojo","Ad Studio","QC Gallery","SCF / Pathways Library","Cross-platform"];
+const ISSUE_TYPES    = ["Bug","New Feature"];
+const TABS_D1        = ["➕ Submit","📋 Requirements"];
+const TABS_D2        = ["🎤 Read-Out","🗂️ Synthesis","🗳️ Voting","⚙️ Engineering"];
+const TEAMS          = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
+const ENGINEERS      = ["Lu","Vicky M","Ale","Colo","Gaston","Pablo"];
+const FACILITATORS   = ["Colo","Ale"];
 
 const FIELD_TOOLTIPS = {
-  problem:      { title:"The Problem Statement", what:"One sentence naming the symptom — what broke, slowed down, or created risk.", why:"This becomes the title of the requirement.", tips:["Focus on the symptom, not the cause","Avoid 'we should' — describe what's broken today","If you can't say it in one sentence, the problem isn't scoped yet"], bad:"The brief process is inefficient", good:"Editors don't know the required video format until after they've finished editing" },
-  roleplay:     { title:"Roleplay Evidence", what:"A concrete blow-by-blow of what happened in the simulation.", why:"This is the evidence that makes the problem real.", tips:["Name the roles involved","Include the exact sequence of events","End with the consequence","Mention any workaround used"], bad:"There was confusion about the format", good:"PM sent Slack asking about aspect ratio. No response for 20 min. Editor assumed 9:16, finished cut. Client replied asking for 16:9 — 45 min rework." },
-  frequency:    { title:"How Often Does This Happen?", what:"Honest estimate of how frequently this problem occurs in real production.", why:"Frequency is one of the biggest drivers of prioritization.", tips:["Think about the last 10 projects","Always = virtually every project","Often = more than half","Sometimes = occasional","Rare but critical = low freq, high severity"] },
-  pipelineStage:{ title:"Pipeline Stage", what:"Where in the production pipeline does this problem occur?", why:"Helps cluster requirements by theme.", tips:["Pick the stage where the problem first surfaces","Cross-stage = spans multiple stages"], stages:["Onboarding / Brief → Auth Service + Airpost Brief","Creative Strategy → Strategy sheet","Script Generation → Dojo","Editing → Ad Studio","Review → QC Gallery","Delivery → Final export","Tweaking → Quick Editor or manual revisions"] },
-  stakeholders: { title:"Who Feels the Pain?", what:"Select every role negatively affected.", why:"Problems impacting multiple stakeholders are systematically more urgent.", tips:["Customer = brand/client","Creative = strategy and scripting","Editors = producing and cutting","PMs = coordinating and tracking","Engineering = tech debt or on-call burden"] },
-  consequences: { title:"What Does It Actually Cost?", what:"The real downstream impact of leaving this unsolved.", why:"Separates 'annoying' from 'existentially dangerous'.", tips:["Time loss = someone spending time they shouldn't","Quality degradation = output is worse","Scale limitation = can't grow without fixing","Client churn risk = could lose a client","Internal burn = burning out the team"] },
-  workaround:   { title:"Current Workaround", what:"What does the team do today to compensate?", why:"Every workaround is proof the problem is real.", tips:["Be specific: 'asks on Slack and waits'","Estimate the time cost","If no workaround: 'We accept the failure / guess / skip it'"], bad:"We handle it manually", good:"Editor sends Slack to PM, waits for client reply, sometimes guesses. ~20–45 min lost per project." },
-  agentPotential:{ title:"Agent Potential", what:"What level of AI automation makes sense?", why:"Helps Engineering design the right solution from the start.", tips:["Be honest — not everything should be automated","Rule-based steps are better candidates","Orchestrated = involves coordinating multiple steps"] },
-  definition:   { title:"Definition of Solved", what:"What would day-to-day look like if this problem no longer existed?", why:"This becomes the acceptance criteria for the epic.", tips:["Write in present tense: 'The editor always receives…'","Focus on what stops happening","Focus on what starts happening automatically","Avoid describing the technical implementation"], bad:"A system that validates the brief automatically", good:"The brief always arrives at editing with the required format filled in. The editor never has to ask or guess." },
+  problem: {
+    title:"What broke, slowed down, or is missing?",
+    what:"One sentence describing the symptom — a bug, a bottleneck, or a missing capability that is creating friction today.",
+    why:"This becomes the title of the requirement. It needs to be sharp enough that anyone reading it immediately understands the pain without needing context.",
+    tips:["For bugs: describe what broke or stopped working","For new features: describe the gap or missing capability","Avoid 'we should' — describe the current reality","If you can't say it in one sentence, the problem isn't scoped yet"],
+    bad:"The brief process is inefficient",
+    good:"Editors don't know the required video format until after they've finished the cut."
+  },
+  roleplay: {
+    title:"Roleplay Evidence / Additional Context",
+    what:"A concrete blow-by-blow of what happened — who did what, in what order, and what went wrong or was missing.",
+    why:"This is the evidence that makes the requirement real. Vague problems get deprioritized. Specific evidence with time costs gets fixed.",
+    tips:["Name the roles involved (PM, Editor, Customer…)","Include the exact sequence of events","End with the consequence: time lost, rework, confusion, client friction","If it's a new feature, describe the workaround being used today or the opportunity being missed"],
+    bad:"There was confusion about the format",
+    good:"PM sent Slack asking the client about aspect ratio. No response for 20 min. Editor assumed 9:16 and finished the cut. Client replied asking for 16:9 — 45 min of rework."
+  },
+  frequency: {title:"How Often Does This Happen?",what:"Honest estimate of how frequently this problem occurs in real production.",why:"Frequency is one of the biggest drivers of prioritization.",tips:["Think about the last 10 projects","Always = virtually every project","Often = more than half","Sometimes = occasional","Rare but critical = low freq, high severity"]},
+  pipelineStage: {title:"Pipeline Stage",what:"Where in the production pipeline does this occur?",why:"Helps cluster requirements by theme.",tips:["Pick the stage where the problem first surfaces","Cross-stage = spans multiple stages"],stages:["Onboarding / Brief → Auth Service + Airpost Brief","Creative Strategy → Strategy sheet","Script Generation → Dojo","Editing → Ad Studio","Review → QC Gallery","Delivery → Final export","Tweaking → Quick Editor or manual revisions"]},
+  stakeholders: {title:"Who Feels the Pain?",what:"Select every role negatively affected.",why:"Problems impacting multiple stakeholders are systematically more urgent.",tips:["Customer = brand/client","Creative = strategy and scripting","Editors = producing and cutting","PMs = coordinating and tracking","Engineering = tech debt or on-call burden"]},
+  consequences: {title:"What Does It Actually Cost?",what:"The real downstream impact of leaving this unsolved.",why:"Separates 'annoying' from 'existentially dangerous'.",tips:["Time loss = someone spending time they shouldn't","Quality degradation = output is worse","Scale limitation = can't grow without fixing","Client churn risk = could lose a client","Internal burn = burning out the team"]},
+  workaround: {title:"Current Workaround",what:"What does the team do today to compensate?",why:"Every workaround is proof the problem is real.",tips:["Be specific: 'asks on Slack and waits'","Estimate the time cost","If no workaround: 'We accept the failure / guess / skip it'"],bad:"We handle it manually",good:"Editor sends Slack to PM, waits for client reply, sometimes guesses. ~20–45 min lost per project."},
+  agentPotential: {title:"Agent Potential",what:"What level of AI automation makes sense?",why:"Helps Engineering design the right solution from the start.",tips:["Be honest — not everything should be automated","Rule-based steps are better candidates","Orchestrated = involves coordinating multiple steps"]},
+  definition: {title:"Definition of Solved",what:"What would day-to-day look like if this no longer existed?",why:"This becomes the acceptance criteria for the epic.",tips:["Write in present tense: 'The editor always receives…'","Focus on what stops happening","Focus on what starts happening automatically","Avoid describing the technical implementation"],bad:"A system that validates the brief automatically",good:"The brief always arrives at editing with the required format filled in. The editor never has to ask or guess."},
 };
 
 const TEAM_COLORS = [
-  {bg:"bg-violet-500", light:"bg-violet-50 border-violet-400 text-violet-700",  badge:"bg-violet-100 text-violet-800"},
+  {bg:"bg-violet-500",light:"bg-violet-50 border-violet-400 text-violet-700",badge:"bg-violet-100 text-violet-800"},
   {bg:"bg-emerald-500",light:"bg-emerald-50 border-emerald-400 text-emerald-700",badge:"bg-emerald-100 text-emerald-800"},
-  {bg:"bg-rose-500",   light:"bg-rose-50 border-rose-400 text-rose-700",         badge:"bg-rose-100 text-rose-800"},
-  {bg:"bg-amber-500",  light:"bg-amber-50 border-amber-400 text-amber-700",      badge:"bg-amber-100 text-amber-800"},
-  {bg:"bg-cyan-500",   light:"bg-cyan-50 border-cyan-400 text-cyan-700",         badge:"bg-cyan-100 text-cyan-800"},
-  {bg:"bg-pink-500",   light:"bg-pink-50 border-pink-400 text-pink-700",         badge:"bg-pink-100 text-pink-800"},
+  {bg:"bg-rose-500",light:"bg-rose-50 border-rose-400 text-rose-700",badge:"bg-rose-100 text-rose-800"},
+  {bg:"bg-amber-500",light:"bg-amber-50 border-amber-400 text-amber-700",badge:"bg-amber-100 text-amber-800"},
+  {bg:"bg-cyan-500",light:"bg-cyan-50 border-cyan-400 text-cyan-700",badge:"bg-cyan-100 text-cyan-800"},
+  {bg:"bg-pink-500",light:"bg-pink-50 border-pink-400 text-pink-700",badge:"bg-pink-100 text-pink-800"},
 ];
-const teamColor = n => TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0];
+const teamColor  = n => TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0];
+const agentBadge = a => ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"}[a]||"bg-gray-100 text-gray-500");
+const buckBadge  = b => ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"}[b]||"bg-gray-100 text-gray-600");
+const catBadge   = c => ({"Workflow Optimization":"bg-green-100 text-green-800","Agent Enablement":"bg-purple-100 text-purple-800","Structural Re-Architecture":"bg-red-100 text-red-800"}[c]||"bg-gray-100 text-gray-600");
+const sizingColor= s => ({"S – hours":"bg-green-100 text-green-700","M – days":"bg-yellow-100 text-yellow-700","L – weeks":"bg-orange-100 text-orange-700","XL – months":"bg-red-100 text-red-700"}[s]||"bg-gray-100 text-gray-600");
+const typeBadge  = t => t === "Bug" ? "bg-rose-100 text-rose-700" : "bg-blue-100 text-blue-700";
 
-const EMPTY_REQ    = { problem:"", roleplayExample:"", frequency:"", stakeholders:[], consequences:[], agentPotential:"", workaround:"", definition:"", pipelineStage:"" };
-const EMPTY_EPIC   = { title:"", description:"", reqIds:[], stackArea:"", sizing:"", category:"", bucket:"", tradeoffs:"", assignee:"", tickets:[] };
-const EMPTY_TICKET = { title:"", role:"", goal:"", acs:["","",""] };
+const EMPTY_REQ = {issueType:"New Feature",problem:"",roleplayExample:"",frequency:"",stakeholders:[],consequences:[],agentPotential:"",workaround:"",definition:"",pipelineStage:"",impactScore:0,frequencyScore:0,riskScore:0,leverageScore:0};
 
-const catBadge    = c => ({"Workflow Optimization":"bg-green-100 text-green-800","Agent Enablement":"bg-purple-100 text-purple-800","Structural Re-Architecture":"bg-red-100 text-red-800"}[c] || "bg-gray-100 text-gray-600");
-const buckBadge   = b => ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"}[b] || "bg-gray-100 text-gray-600");
-const agentBadge  = a => ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"}[a] || "bg-gray-100 text-gray-500");
-const sizingColor = s => ({"S – hours":"bg-green-100 text-green-700","M – days":"bg-yellow-100 text-yellow-700","L – weeks":"bg-orange-100 text-orange-700","XL – months":"bg-red-100 text-red-700"}[s] || "bg-gray-100 text-gray-600");
-
-function Tooltip({ tip }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-  return (
+// ── Tooltip ──────────────────────────────────────────────────
+function Tooltip({tip}) {
+  const [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h)},[]);
+  return(
     <div className="relative inline-block" ref={ref}>
-      <button onClick={() => setOpen(o => !o)} className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-500 text-xs font-black hover:bg-indigo-200 flex items-center justify-center flex-shrink-0">?</button>
-      {open && (
+      <button onClick={()=>setOpen(o=>!o)} className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-500 text-xs font-black hover:bg-indigo-200 flex items-center justify-center flex-shrink-0">?</button>
+      {open&&(
         <div className="absolute z-50 left-0 top-7 w-80 bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-3">
           <p className="text-sm font-black text-gray-900">{tip.title}</p>
           <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">What</p><p className="text-xs text-gray-600 leading-relaxed">{tip.what}</p></div>
           <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Why it matters</p><p className="text-xs text-gray-600 leading-relaxed">{tip.why}</p></div>
-          {tip.tips && <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Tips</p><ul className="space-y-1">{tip.tips.map((t,i) => <li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">→</span>{t}</li>)}</ul></div>}
-          {tip.stages && <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Stages reference</p><ul className="space-y-1">{tip.stages.map((s,i) => <li key={i} className="text-xs text-gray-500 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">·</span>{s}</li>)}</ul></div>}
-          {(tip.bad || tip.good) && (
-            <div className="space-y-2 pt-1 border-t border-gray-100">
-              {tip.bad && <div className="bg-red-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-red-500 mb-0.5">❌ Too vague</p><p className="text-xs text-red-700 italic">"{tip.bad}"</p></div>}
-              {tip.good && <div className="bg-green-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-green-600 mb-0.5">✅ Good example</p><p className="text-xs text-green-700 italic">"{tip.good}"</p></div>}
-            </div>
-          )}
+          {tip.tips&&<div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Tips</p><ul className="space-y-1">{tip.tips.map((t,i)=><li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">→</span>{t}</li>)}</ul></div>}
+          {tip.stages&&<div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Stages reference</p><ul className="space-y-1">{tip.stages.map((s,i)=><li key={i} className="text-xs text-gray-500 flex gap-1.5"><span className="text-indigo-400 flex-shrink-0">·</span>{s}</li>)}</ul></div>}
+          {(tip.bad||tip.good)&&<div className="space-y-2 pt-1 border-t border-gray-100">{tip.bad&&<div className="bg-red-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-red-500 mb-0.5">❌ Too vague</p><p className="text-xs text-red-700 italic">"{tip.bad}"</p></div>}{tip.good&&<div className="bg-green-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-green-600 mb-0.5">✅ Good example</p><p className="text-xs text-green-700 italic">"{tip.good}"</p></div>}</div>}
         </div>
       )}
     </div>
   );
 }
 
-function Badge({ cls, children }) {
-  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cls}`}>{children}</span>;
+// ── Primitives ───────────────────────────────────────────────
+function Badge({cls,children}){return <span className={`text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cls}`}>{children}</span>;}
+function Chip({label,active,onClick}){return <button onClick={onClick} className={`text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all ${active?"bg-indigo-600 text-white border-indigo-600":"bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}>{label}</button>;}
+function MultiChips({options,selected,onChange}){return <div className="flex flex-wrap gap-2">{options.map(o=><Chip key={o} label={o} active={selected.includes(o)} onClick={()=>onChange(selected.includes(o)?selected.filter(x=>x!==o):[...selected,o])}/>)}</div>;}
+function ScorePicker({label,emoji,value,onChange,color}){
+  const cls={blue:"bg-blue-600 border-blue-600",orange:"bg-orange-500 border-orange-500",red:"bg-red-600 border-red-600",indigo:"bg-indigo-600 border-indigo-600"};
+  return <div className="space-y-1"><p className="text-xs font-semibold text-gray-600">{emoji} {label}</p><div className="flex gap-1">{[1,2,3,4,5].map(n=><button key={n} onClick={()=>onChange(n)} className={`w-8 h-8 rounded-lg border text-xs font-bold transition-all ${value===n?`${cls[color]} text-white`:"border-gray-300 text-gray-400 hover:border-indigo-300"}`}>{n}</button>)}</div></div>;
 }
-function Chip({ label, active, onClick }) {
-  return <button onClick={onClick} className={`text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all ${active ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}>{label}</button>;
-}
-function MultiChips({ options, selected, onChange }) {
-  return <div className="flex flex-wrap gap-2">{options.map(o => <Chip key={o} label={o} active={selected.includes(o)} onClick={() => onChange(selected.includes(o) ? selected.filter(x => x !== o) : [...selected, o])} />)}</div>;
-}
-function ScorePicker({ label, emoji, value, onChange, color }) {
-  const cls = { blue:"bg-blue-600 border-blue-600", orange:"bg-orange-500 border-orange-500", red:"bg-red-600 border-red-600", indigo:"bg-indigo-600 border-indigo-600" };
-  return (
-    <div className="space-y-1">
-      <p className="text-xs font-semibold text-gray-600">{emoji} {label}</p>
-      <div className="flex gap-1">{[1,2,3,4,5].map(n => <button key={n} onClick={() => onChange(n)} className={`w-8 h-8 rounded-lg border text-xs font-bold transition-all ${value === n ? `${cls[color]} text-white` : "border-gray-300 text-gray-400 hover:border-indigo-300"}`}>{n}</button>)}</div>
-    </div>
-  );
-}
-function Section({ step, bgColor, emoji, label, sublabel, children }) {
-  return (
-    <div className="rounded-2xl border shadow-sm overflow-hidden">
-      <div className={`${bgColor} px-5 py-4 flex items-center gap-3`}>
-        <div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{step}</div>
-        <div><p className="text-base font-black text-white">{emoji} {label}</p>{sublabel && <p className="text-xs text-white opacity-80 mt-0.5">{sublabel}</p>}</div>
-      </div>
-      <div className="bg-white p-5 space-y-5">{children}</div>
-    </div>
-  );
-}
-function Field({ label, required, tipKey, children }) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <label className="text-sm font-bold text-gray-800">{label}{required && <span className="text-red-400"> *</span>}</label>
-        {tipKey && FIELD_TOOLTIPS[tipKey] && <Tooltip tip={FIELD_TOOLTIPS[tipKey]} />}
-      </div>
-      {children}
-    </div>
-  );
-}
-function SyncBadge({ status }) {
-  const map = { syncing:"🔄 Syncing…", ok:"✅ Saved", error:"⚠️ Sync error" };
-  const cls = { syncing:"text-indigo-500", ok:"text-emerald-600", error:"text-rose-600" };
-  if (!map[status]) return null;
-  return <span className={`text-xs font-semibold ${cls[status]}`}>{map[status]}</span>;
+function Section({step,bgColor,emoji,label,sublabel,children}){return(<div className="rounded-2xl border shadow-sm overflow-hidden"><div className={`${bgColor} px-5 py-4 flex items-center gap-3`}><div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{step}</div><div><p className="text-base font-black text-white">{emoji} {label}</p>{sublabel&&<p className="text-xs text-white opacity-80 mt-0.5">{sublabel}</p>}</div></div><div className="bg-white p-5 space-y-5">{children}</div></div>);}
+function Field({label,required,tipKey,children}){return(<div className="space-y-2"><div className="flex items-center gap-2"><label className="text-sm font-bold text-gray-800">{label}{required&&<span className="text-red-400"> *</span>}</label>{tipKey&&FIELD_TOOLTIPS[tipKey]&&<Tooltip tip={FIELD_TOOLTIPS[tipKey]}/>}</div>{children}</div>);}
+function SyncBadge({status}){const map={syncing:"🔄 Syncing…",ok:"✅ Saved",error:"⚠️ Sync error"};const cls={syncing:"text-indigo-500",ok:"text-emerald-600",error:"text-rose-600"};if(!map[status])return null;return <span className={`text-xs font-semibold ${cls[status]}`}>{map[status]}</span>;}
+
+// ── OtherSelect ──────────────────────────────────────────────
+function OtherSelect({options,value,onChange,placeholder}){
+  const isOther = value && !options.filter(o=>o!=="Other").includes(value) && value!=="Other" && value!=="";
+  const [showInput,setShowInput]=useState(isOther);
+  const [selectVal,setSelectVal]=useState(isOther?"Other":value||"");
+  const [inputVal,setInputVal]=useState(isOther?value:"");
+  const handleSelect=v=>{setSelectVal(v);if(v==="Other"){setShowInput(true);onChange("");}else{setShowInput(false);setInputVal("");onChange(v);}};
+  const handleInput=v=>{setInputVal(v);onChange(v);};
+  return(<div className="space-y-2">
+    <select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={selectVal} onChange={e=>handleSelect(e.target.value)}>
+      <option value="">{placeholder||"Select…"}</option>{options.map(o=><option key={o}>{o}</option>)}
+    </select>
+    {showInput&&<input className="w-full border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-indigo-400" placeholder="Describe the cluster…" value={inputVal} onChange={e=>handleInput(e.target.value)}/>}
+  </div>);
 }
 
-function EntryScreen({ onEnter }) {
-  const [team, setTeam] = useState(null);
-  const [day,  setDay]  = useState(null);
-  return (
+// ── Entry screen ─────────────────────────────────────────────
+function EntryScreen({onEnter}){
+  const [team,setTeam]=useState(null);
+  const [day,setDay]=useState(null);
+  return(
     <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
       <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
         <div className="text-center"><div className="text-5xl mb-2">⚡</div><h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1><p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p></div>
-        <div>
-          <label className="text-sm font-bold text-gray-700 block mb-3">Select your team</label>
-          <div className="grid grid-cols-2 gap-2">
-            {TEAMS.map(t => { const col = teamColor(t); return <button key={t} onClick={() => setTeam(t)} className={`py-3 px-2 rounded-xl border-2 text-sm font-black transition-all ${team === t ? col.light : "border-gray-200 text-gray-400 hover:border-gray-300"}`}>{t}</button>; })}
-          </div>
-          {team && <p className="text-center text-sm text-gray-500 mt-3"><span className={`px-3 py-1 rounded-full font-semibold ${teamColor(team).badge}`}>{team} ✓</span></p>}
+        <div><label className="text-sm font-bold text-gray-700 block mb-3">Select your team</label>
+          <div className="grid grid-cols-2 gap-2">{TEAMS.map(t=>{const col=teamColor(t);return <button key={t} onClick={()=>setTeam(t)} className={`py-3 px-2 rounded-xl border-2 text-sm font-black transition-all ${team===t?col.light:"border-gray-200 text-gray-400 hover:border-gray-300"}`}>{t}</button>;})}</div>
+          {team&&<p className="text-center text-sm text-gray-500 mt-3"><span className={`px-3 py-1 rounded-full font-semibold ${teamColor(team).badge}`}>{team} ✓</span></p>}
         </div>
-        <div>
-          <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
-          <div className="grid grid-cols-2 gap-3">
-            {[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji}) => (
-              <button key={d} onClick={() => setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day === d ? "bg-indigo-50 border-indigo-500 text-indigo-700" : "border-gray-200 text-gray-400 hover:border-gray-300"}`}>
-                <div className="text-2xl mb-1">{emoji}</div><div className="font-bold">{label}</div><div className="text-xs opacity-70">{sub}</div>
-              </button>
-            ))}
-          </div>
+        <div><label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
+          <div className="grid grid-cols-2 gap-3">{[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji})=>(
+            <button key={d} onClick={()=>setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day===d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300"}`}>
+              <div className="text-2xl mb-1">{emoji}</div><div className="font-bold">{label}</div><div className="text-xs opacity-70">{sub}</div>
+            </button>
+          ))}</div>
         </div>
-        <button onClick={() => team && day && onEnter(team, day)} disabled={!team || !day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">Enter the Hub →</button>
+        <button onClick={()=>team&&day&&onEnter(team,day)} disabled={!team||!day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">Enter the Hub →</button>
       </div>
     </div>
   );
 }
 
-function SubmitTab({ user, onSave, syncStatus }) {
-  const [form, setForm]         = useState(EMPTY_REQ);
-  const [done, setDone]         = useState(false);
-  const [translating, setTrans] = useState(false);
-  const f = (k, v) => setForm(p => ({...p, [k]: v}));
-  const canSubmit = !!(form.problem?.trim() && form.roleplayExample?.trim() && form.frequency && form.definition?.trim());
-  const missing = [!form.problem?.trim() && "problem", !form.roleplayExample?.trim() && "roleplay example", !form.frequency && "frequency", !form.definition?.trim() && "definition of solved"].filter(Boolean);
-  const submit = async () => {
-    if (!canSubmit) return;
-    setTrans(true);
-    const req = {...form, id: Date.now(), team: user.team, ts: new Date().toISOString(), cluster: "Unclustered", category: "", bucket: ""};
-    try {
-      const translated = await translateToEnglish({ problem: req.problem, roleplayExample: req.roleplayExample, workaround: req.workaround, definition: req.definition });
-      await onSave({...req, ...translated});
-    } catch { await onSave(req); }
-    setTrans(false);
-    setForm(EMPTY_REQ); setDone(true); setTimeout(() => setDone(false), 3500);
+// ── Submit tab ───────────────────────────────────────────────
+function SubmitTab({user,onSave,syncStatus}){
+  const [form,setForm]=useState(EMPTY_REQ);
+  const [done,setDone]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const canSubmit=!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency&&form.definition?.trim());
+  const missing=[!form.problem?.trim()&&"problem",!form.roleplayExample?.trim()&&"context",!form.frequency&&"frequency",!form.definition?.trim()&&"definition of solved"].filter(Boolean);
+  const submit=async()=>{
+    if(!canSubmit)return;
+    setSaving(true);
+    const req={...form,id:Date.now(),team:user.team,ts:new Date().toISOString(),cluster:"Unclustered",category:"",bucket:""};
+    try{const translated=await gsTranslate({problem:req.problem,roleplayExample:req.roleplayExample,workaround:req.workaround,definition:req.definition});await onSave({...req,...translated});}
+    catch{await onSave(req);}
+    setSaving(false);setForm(EMPTY_REQ);setDone(true);setTimeout(()=>setDone(false),3500);
   };
-  const ta  = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition-colors placeholder-gray-300";
-  const sel = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
-  const steps = [{l:"Problem",ok:!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround?.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition?.trim()}];
-  return (
+  const ta="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none transition-colors placeholder-gray-300";
+  const sel="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
+  const steps=[{l:"Problem",ok:!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround?.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition?.trim()},{l:"Rate",ok:!!(form.impactScore&&form.frequencyScore&&form.riskScore&&form.leverageScore)}];
+  return(
     <div className="space-y-4">
-      {done && (
-        <div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999}} className="bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl flex items-center gap-2">
-          ✅ Saved to Google Sheets! Add another one.
-        </div>
-      )}
+      {done&&<div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999}} className="bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl">✅ Saved to Google Sheets! Add another one.</div>}
       <div className="bg-white rounded-xl border px-4 py-3 flex items-center gap-2 flex-wrap">
-        {steps.map((s,i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            {i > 0 && <div className="w-4 h-px bg-gray-200" />}
-            <div className={`flex items-center gap-1 text-xs font-semibold ${s.ok ? "text-indigo-600" : "text-gray-400"}`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${s.ok ? "bg-indigo-600 text-white" : "bg-gray-100"}`}>{s.ok ? "✓" : i+1}</div>{s.l}
-            </div>
-          </div>
-        ))}
-        <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus} /><span className="text-xs text-gray-400 italic">✨ Auto-translated</span></span>
+        {steps.map((s,i)=><div key={i} className="flex items-center gap-1.5">{i>0&&<div className="w-4 h-px bg-gray-200"/>}<div className={`flex items-center gap-1 text-xs font-semibold ${s.ok?"text-indigo-600":"text-gray-400"}`}><div className={`w-4 h-4 rounded-full flex items-center justify-center text-xs ${s.ok?"bg-indigo-600 text-white":"bg-gray-100"}`}>{s.ok?"✓":i+1}</div>{s.l}</div></div>)}
+        <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus}/><span className="text-xs text-gray-400 italic">✨ Auto-translated</span></span>
       </div>
-      <Section step="1" bgColor="bg-indigo-700" emoji="🔍" label="The Problem" sublabel="Capture what happened while it's fresh. Write in any language.">
-        <Field label="What broke, slowed down or created risk?" required tipKey="problem"><textarea className={ta} rows={2} value={form.problem} onChange={e => f("problem", e.target.value)} placeholder="e.g. Editors don't know the required video format until after they've finished the cut." /></Field>
-        <Field label="What happened exactly in the roleplay?" required tipKey="roleplay"><textarea className={ta} rows={4} value={form.roleplayExample} onChange={e => f("roleplayExample", e.target.value)} placeholder="e.g. PM asked the client about aspect ratio in Slack. No response for 20 min..." /></Field>
+
+      <Section step="1" bgColor="bg-indigo-700" emoji="🔍" label="The Requirement" sublabel="Capture what happened while it's fresh. Write in any language.">
+        <Field label="Is this a bug or a new feature?" required>
+          <div className="flex gap-3">{ISSUE_TYPES.map(t=><button key={t} onClick={()=>f("issueType",t)} className={`flex-1 py-3 rounded-xl border-2 text-sm font-bold transition-all ${form.issueType===t?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-500 hover:border-indigo-300"}`}>{t==="Bug"?"🐛 Bug":"✨ New Feature"}</button>)}</div>
+        </Field>
+        <Field label={form.issueType==="Bug"?"What broke, slowed down or created risk?":"What new capability or feature is needed?"} required tipKey="problem">
+          <textarea className={ta} rows={2} value={form.problem} onChange={e=>f("problem",e.target.value)} placeholder={form.issueType==="Bug"?"e.g. Editors don't know the required video format until after they've finished the cut.":"e.g. There's no way to preview how a super will look before sending for client review."} />
+        </Field>
+        <Field label="Additional context & roleplay evidence" required tipKey="roleplay">
+          <textarea className={ta} rows={4} value={form.roleplayExample} onChange={e=>f("roleplayExample",e.target.value)} placeholder="e.g. PM asked the client about aspect ratio in Slack. No response for 20 min. Editor assumed 9:16 and finished the cut. Client replied asking for 16:9 — 45 min of rework." />
+        </Field>
         <Field label="How often does this happen in real production?" required tipKey="frequency">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {FREQUENCIES.map(fr => { const m = FREQ_META[fr]; return (
-              <button key={fr} onClick={() => f("frequency", fr)} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all ${form.frequency === fr ? "bg-indigo-600 border-indigo-600 text-white" : "border-gray-200 text-gray-600 hover:border-indigo-300"}`}>
-                <span className="text-lg">{m.emoji}</span><span className="text-xs font-bold">{fr}</span><span className={`text-xs ${form.frequency === fr ? "text-indigo-200" : "text-gray-400"}`}>{m.desc}</span>
-              </button>
-            ); })}
-          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{FREQUENCIES.map(fr=>{const m=FREQ_META[fr];return(<button key={fr} onClick={()=>f("frequency",fr)} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all ${form.frequency===fr?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-600 hover:border-indigo-300"}`}><span className="text-lg">{m.emoji}</span><span className="text-xs font-bold">{fr}</span><span className={`text-xs ${form.frequency===fr?"text-indigo-200":"text-gray-400"}`}>{m.desc}</span></button>);})}</div>
         </Field>
         <Field label="Where in the pipeline does this happen?" tipKey="pipelineStage">
-          <select className={sel} value={form.pipelineStage} onChange={e => f("pipelineStage", e.target.value)}><option value="">Select a stage…</option>{PIPELINE_STAGES.map(s => <option key={s}>{s}</option>)}</select>
+          <select className={sel} value={form.pipelineStage} onChange={e=>f("pipelineStage",e.target.value)}><option value="">Select a stage…</option>{PIPELINE_STAGES.map(s=><option key={s}>{s}</option>)}</select>
         </Field>
       </Section>
+
       <Section step="2" bgColor="bg-rose-600" emoji="💥" label="The Impact" sublabel="Who suffers and what is it costing right now?">
-        <Field label="Who feels the pain directly?" tipKey="stakeholders"><MultiChips options={STAKEHOLDERS} selected={form.stakeholders} onChange={v => f("stakeholders", v)} /></Field>
-        <Field label="What's the real cost of not fixing this?" tipKey="consequences"><MultiChips options={CONSEQUENCES} selected={form.consequences} onChange={v => f("consequences", v)} /></Field>
-        <Field label="How is the team handling this today?" tipKey="workaround"><textarea className={ta} rows={2} value={form.workaround} onChange={e => f("workaround", e.target.value)} placeholder="e.g. Editor asks on Slack and waits. Sometimes guesses. ~20–45 min lost per project." /></Field>
+        <Field label="Who feels the pain directly?" tipKey="stakeholders"><MultiChips options={STAKEHOLDERS} selected={form.stakeholders} onChange={v=>f("stakeholders",v)}/></Field>
+        <Field label="What's the real cost of not fixing this?" tipKey="consequences"><MultiChips options={CONSEQUENCES} selected={form.consequences} onChange={v=>f("consequences",v)}/></Field>
+        <Field label="How is the team handling this today?" tipKey="workaround"><textarea className={ta} rows={2} value={form.workaround} onChange={e=>f("workaround",e.target.value)} placeholder="e.g. Editor asks on Slack and waits. Sometimes guesses. ~20–45 min lost per project."/></Field>
       </Section>
+
       <Section step="3" bgColor="bg-violet-600" emoji="🤖" label="Agent Potential" sublabel="Could AI handle this step?">
         <Field label="If we were to automate this, what level makes sense?" tipKey="agentPotential">
-          <div className="space-y-2">
-            {AGENT_POTENTIALS.map(ap => { const m = AGENT_META[ap]; return (
-              <button key={ap} onClick={() => f("agentPotential", ap)} className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${form.agentPotential === ap ? "bg-violet-600 border-violet-600 text-white" : "bg-white border-gray-200 hover:border-violet-300"}`}>
-                <span className="text-xl flex-shrink-0">{m.emoji}</span>
-                <div><p className={`text-sm font-bold ${form.agentPotential === ap ? "text-white" : "text-gray-800"}`}>{ap}</p><p className={`text-xs mt-0.5 leading-snug ${form.agentPotential === ap ? "text-violet-200" : "text-gray-500"}`}>{m.desc}</p></div>
-                {form.agentPotential === ap && <span className="ml-auto text-white text-sm flex-shrink-0">✓</span>}
-              </button>
-            ); })}
-          </div>
+          <div className="space-y-2">{AGENT_POTENTIALS.map(ap=>{const m=AGENT_META[ap];return(<button key={ap} onClick={()=>f("agentPotential",ap)} className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${form.agentPotential===ap?"bg-violet-600 border-violet-600 text-white":"bg-white border-gray-200 hover:border-violet-300"}`}><span className="text-xl flex-shrink-0">{m.emoji}</span><div><p className={`text-sm font-bold ${form.agentPotential===ap?"text-white":"text-gray-800"}`}>{ap}</p><p className={`text-xs mt-0.5 ${form.agentPotential===ap?"text-violet-200":"text-gray-500"}`}>{m.desc}</p></div>{form.agentPotential===ap&&<span className="ml-auto text-white text-sm">✓</span>}</button>);})}</div>
         </Field>
       </Section>
+
       <Section step="4" bgColor="bg-emerald-600" emoji="🎯" label="Definition of Solved" sublabel="The most important question — and the one teams skip most often.">
-        <Field label="How would we know this is fixed?" required tipKey="definition"><textarea className={ta} rows={4} value={form.definition} onChange={e => f("definition", e.target.value)} placeholder="e.g. The brief always arrives at editing with the required format filled in. The editor never has to ask or guess." /></Field>
+        <Field label="How would we know this is fixed?" required tipKey="definition"><textarea className={ta} rows={4} value={form.definition} onChange={e=>f("definition",e.target.value)} placeholder="e.g. The brief always arrives at editing with the required format filled in. The editor never has to ask or guess."/></Field>
       </Section>
-      <button onClick={submit} disabled={!canSubmit || translating} className="w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-md">
-        {translating ? "✨ Translating & saving to Sheets…" : canSubmit ? "Submit Requirement ✓" : "Complete required fields to submit"}
+
+      <Section step="5" bgColor="bg-slate-700" emoji="⭐" label="Your Rating" sublabel="Rate this requirement from your perspective before submitting.">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <ScorePicker label="Impact" emoji="💥" color="blue" value={form.impactScore} onChange={v=>f("impactScore",v)}/>
+          <ScorePicker label="Frequency" emoji="🔁" color="orange" value={form.frequencyScore} onChange={v=>f("frequencyScore",v)}/>
+          <ScorePicker label="Risk" emoji="⚠️" color="red" value={form.riskScore} onChange={v=>f("riskScore",v)}/>
+          <ScorePicker label="Strategic" emoji="🚀" color="indigo" value={form.leverageScore} onChange={v=>f("leverageScore",v)}/>
+        </div>
+        <p className="text-xs text-gray-400">Rate based on how important this feels to you. 1 = low, 5 = critical.</p>
+      </Section>
+
+      <button onClick={submit} disabled={!canSubmit||saving} className="w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-md">
+        {saving?"✨ Translating & saving…":canSubmit?"Submit Requirement ✓":"Complete required fields to submit"}
       </button>
-      {!canSubmit && <p className="text-xs text-center text-gray-400">Still needed: {missing.join(" · ")}</p>}
+      {!canSubmit&&<p className="text-xs text-center text-gray-400">Still needed: {missing.join(" · ")}</p>}
     </div>
   );
 }
 
-function OpportunitiesTab({ reqs, upvotes, scores, user, onUpvote, onScore }) {
-  const [expanded, setExpanded] = useState(null);
-  const [fTeam,  setFTeam]  = useState("All");
-  const [fStage, setFStage] = useState("All");
-  const vid = user.team.toLowerCase().replace(/\s+/g, "-");
-  const getVotes  = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
-  const hasVoted  = id => !!(upvotes[String(id)] || {})[vid];
-  const getMyScore= id => (scores[String(id)] || {})[vid] || {};
-  const getAvg    = id => {
-    const all = Object.values(scores[String(id)] || {});
-    if (!all.length) return { impact:0, frequency:0, risk:0, leverage:0, total:0, voters:0 };
-    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s + (x[f]||0), 0) / v.length : 0; };
-    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
-    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
-  };
-  const filtered = reqs.filter(r => (fTeam==="All" || r.team===fTeam) && (fStage==="All" || r.pipelineStage===fStage));
-  return (
+// ── Requirements tab ─────────────────────────────────────────
+function RequirementsTab({reqs,user,onUpdate,onDelete}){
+  const [expanded,setExpanded]=useState(null);
+  const [editing,setEditing]=useState(null);
+  const [editForm,setEditForm]=useState(null);
+  const [fTeam,setFTeam]=useState("All");
+  const [fStage,setFStage]=useState("All");
+  const [fType,setFType]=useState("All");
+  const filtered=reqs.filter(r=>(fTeam==="All"||r.team===fTeam)&&(fStage==="All"||r.pipelineStage===fStage)&&(fType==="All"||r.issueType===fType));
+  const startEdit=r=>{setEditing(r.id);setEditForm({...r});};
+  const saveEdit=async()=>{await onUpdate(editForm.id,editForm);setEditing(null);setEditForm(null);};
+  const ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
+  return(
     <div className="space-y-4">
       <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center">
         <span className="text-xs font-semibold text-gray-500">Filter:</span>
-        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fTeam} onChange={e => setFTeam(e.target.value)}><option value="All">All Teams</option>{TEAMS.map(t => <option key={t}>{t}</option>)}</select>
-        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fStage} onChange={e => setFStage(e.target.value)}><option value="All">All Stages</option>{PIPELINE_STAGES.map(s => <option key={s}>{s}</option>)}</select>
-        <span className="ml-auto text-xs text-gray-400">{filtered.length} result{filtered.length !== 1 ? "s" : ""}</span>
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fTeam} onChange={e=>setFTeam(e.target.value)}><option value="All">All Teams</option>{TEAMS.map(t=><option key={t}>{t}</option>)}</select>
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fStage} onChange={e=>setFStage(e.target.value)}><option value="All">All Stages</option>{PIPELINE_STAGES.map(s=><option key={s}>{s}</option>)}</select>
+        <select className="border rounded-lg px-2 py-1.5 text-xs" value={fType} onChange={e=>setFType(e.target.value)}><option value="All">All Types</option>{ISSUE_TYPES.map(t=><option key={t}>{t}</option>)}</select>
+        <span className="ml-auto text-xs text-gray-400">{filtered.length} item{filtered.length!==1?"s":""}</span>
       </div>
-      {filtered.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-        : filtered.map(r => {
-          const tc = teamColor(r.team); const avg = getAvg(r.id);
-          return (
+      {filtered.length===0
+        ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
+        :filtered.map(r=>{
+          const tc=teamColor(r.team);
+          const isOwner=r.team===user.team;
+          const isEditing=editing===r.id;
+          const avgScore=((r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0));
+          return(
             <div key={r.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-              <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
+              <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={()=>!isEditing&&setExpanded(expanded===r.id?null:r.id)}>
                 <div className="flex items-start gap-3">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800 line-clamp-2">{r.problem}</p>
+                    <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
                     <div className="flex flex-wrap gap-1.5 mt-2">
                       <Badge cls={tc.badge}>{r.team}</Badge>
-                      {r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
-                      {r.pipelineStage && <Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
-                      {r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
+                      {r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}
+                      {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
+                      {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
                     </div>
                   </div>
-                  <div className="text-center flex-shrink-0"><div className="text-2xl font-black text-indigo-600">{getVotes(r.id)}</div><div className="text-xs text-gray-400">votes</div>{avg.total>0 && <div className="text-xs font-bold text-indigo-400">{avg.total.toFixed(1)}pts</div>}</div>
+                  {avgScore>0&&<div className="text-center flex-shrink-0"><div className="text-xl font-black text-indigo-600">{avgScore}</div><div className="text-xs text-gray-400">pts</div></div>}
                 </div>
               </div>
-              {expanded === r.id && (
+              {expanded===r.id&&!isEditing&&(
                 <div className="border-t bg-slate-50 p-4 space-y-3">
-                  {r.roleplayExample && <div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">🎭 Roleplay evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+                  {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    {r.stakeholders?.length > 0 && <div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders) ? r.stakeholders : [r.stakeholders]).join(", ")}</div>}
-                    {r.consequences?.length > 0 && <div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences) ? r.consequences : [r.consequences]).join(", ")}</div>}
+                    {r.stakeholders?.length>0&&<div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</div>}
+                    {r.consequences?.length>0&&<div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</div>}
+                    {r.agentPotential&&<div><span className="font-semibold text-gray-600">Agent: </span>{r.agentPotential}</div>}
+                    {r.workaround&&<div><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
                   </div>
-                  {r.workaround && <div className="bg-gray-100 rounded-xl p-3 text-xs"><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
-                  {r.definition && <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-                  <div className="bg-white rounded-xl border p-3 space-y-3">
-                    <p className="text-xs font-bold text-gray-700">Rate this requirement:</p>
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      <ScorePicker label="Impact"    emoji="💥" color="blue"   value={getMyScore(r.id).impact||0}    onChange={v => onScore(r.id,"impact",v)} />
-                      <ScorePicker label="Frequency" emoji="🔁" color="orange" value={getMyScore(r.id).frequency||0} onChange={v => onScore(r.id,"frequency",v)} />
-                      <ScorePicker label="Risk"      emoji="⚠️" color="red"    value={getMyScore(r.id).risk||0}      onChange={v => onScore(r.id,"risk",v)} />
-                      <ScorePicker label="Strategic" emoji="🚀" color="indigo" value={getMyScore(r.id).leverage||0}  onChange={v => onScore(r.id,"leverage",v)} />
-                    </div>
-                    {avg.voters > 0 && <div className="text-xs text-gray-400 flex gap-3 pt-1 border-t flex-wrap"><span>{avg.voters} voter{avg.voters!==1?"s":""}</span><span>💥{avg.impact.toFixed(1)}</span><span>🔁{avg.frequency.toFixed(1)}</span><span>⚠️{avg.risk.toFixed(1)}</span><span>🚀{avg.leverage.toFixed(1)}</span></div>}
+                  {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+                  {avgScore>0&&<div className="flex gap-3 text-xs text-gray-500 bg-white rounded-xl p-3 border"><span>💥 {r.impactScore||0}</span><span>🔁 {r.frequencyScore||0}</span><span>⚠️ {r.riskScore||0}</span><span>🚀 {r.leverageScore||0}</span><span className="font-bold text-indigo-600 ml-auto">Total: {avgScore}</span></div>}
+                  {isOwner&&<div className="flex gap-2 pt-1"><button onClick={()=>startEdit(r)} className="flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50">✏️ Edit</button><button onClick={()=>onDelete(r.id)} className="py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50">🗑️ Delete</button></div>}
+                </div>
+              )}
+              {isEditing&&editForm&&(
+                <div className="border-t bg-slate-50 p-4 space-y-3">
+                  <p className="text-xs font-bold text-gray-600">Editing requirement</p>
+                  <textarea className={ta} rows={2} value={editForm.problem} onChange={e=>setEditForm(p=>({...p,problem:e.target.value}))} placeholder="Problem"/>
+                  <textarea className={ta} rows={3} value={editForm.roleplayExample} onChange={e=>setEditForm(p=>({...p,roleplayExample:e.target.value}))} placeholder="Context & evidence"/>
+                  <textarea className={ta} rows={2} value={editForm.definition} onChange={e=>setEditForm(p=>({...p,definition:e.target.value}))} placeholder="Definition of solved"/>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Frequency</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.frequency} onChange={e=>setEditForm(p=>({...p,frequency:e.target.value}))}><option value="">Select…</option>{FREQUENCIES.map(f=><option key={f}>{f}</option>)}</select></div>
+                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Type</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.issueType||"New Feature"} onChange={e=>setEditForm(p=>({...p,issueType:e.target.value}))}>{ISSUE_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
                   </div>
-                  <button onClick={() => onUpvote(r.id)} className={`w-full py-2.5 rounded-xl text-sm font-semibold border-2 transition-all ${hasVoted(r.id) ? "bg-indigo-600 text-white border-indigo-600" : "border-indigo-300 text-indigo-600 hover:bg-indigo-50"}`}>
-                    {hasVoted(r.id) ? "✓ Upvoted — click to remove" : "👍 Upvote this requirement"}
-                  </button>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <ScorePicker label="Impact" emoji="💥" color="blue" value={editForm.impactScore||0} onChange={v=>setEditForm(p=>({...p,impactScore:v}))}/>
+                    <ScorePicker label="Frequency" emoji="🔁" color="orange" value={editForm.frequencyScore||0} onChange={v=>setEditForm(p=>({...p,frequencyScore:v}))}/>
+                    <ScorePicker label="Risk" emoji="⚠️" color="red" value={editForm.riskScore||0} onChange={v=>setEditForm(p=>({...p,riskScore:v}))}/>
+                    <ScorePicker label="Strategic" emoji="🚀" color="indigo" value={editForm.leverageScore||0} onChange={v=>setEditForm(p=>({...p,leverageScore:v}))}/>
+                  </div>
+                  <div className="flex gap-2"><button onClick={saveEdit} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">Save</button><button onClick={()=>{setEditing(null);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button></div>
                 </div>
               )}
             </div>
           );
-        })}
+        })
+      }
     </div>
   );
 }
 
-function RankingTab({ reqs, upvotes, scores }) {
-  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
-  const getAvg   = id => {
-    const all = Object.values(scores[String(id)] || {});
-    if (!all.length) return { impact:0, frequency:0, risk:0, leverage:0, total:0, voters:0 };
-    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0), 0)/v.length : 0; };
-    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
-    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
-  };
-  const composite = r => getVotes(r.id)*2 + getAvg(r.id).total;
-  const ranked = [...reqs].map(r => ({...r, comp:composite(r), avg:getAvg(r.id)})).sort((a,b) => b.comp - a.comp);
-  const max = ranked[0]?.comp || 1;
-  const medals = ["🥇","🥈","🥉"];
-  const barCols = ["bg-yellow-400","bg-gray-300","bg-orange-400"];
-  return (
+// ── Read-Out tab ─────────────────────────────────────────────
+function ReadOutTab({reqs}){
+  const [activeTeam,setActiveTeam]=useState(TEAMS[0]);
+  const [cursor,setCursor]=useState(0);
+  const activeTeams=[...new Set(reqs.map(r=>r.team))];
+  const teamReqs=reqs.filter(r=>r.team===activeTeam);
+  const current=teamReqs[cursor];
+  return(
     <div className="space-y-4">
-      <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700"><strong>Score</strong> = Upvotes × 2 + avg(Impact + Frequency + Risk + Strategic Leverage).</div>
-      {ranked.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">🏆</p><p className="text-sm">Nothing to rank yet.</p></div>
-        : ranked.map((r, i) => { const tc = teamColor(r.team); return (
-          <div key={r.id} className={`bg-white rounded-xl border shadow-sm p-4 flex gap-3 items-start ${i < 3 ? "border-l-4 " + ["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i] : ""}`}>
-            <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i] || `#${i+1}`}</div>
-            <div className="flex-1 min-w-0 space-y-2">
-              <p className="text-sm font-semibold text-gray-800 line-clamp-2">{r.problem}</p>
-              <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>
-              <div className="w-full bg-gray-100 rounded-full h-1.5"><div className={`${i < 3 ? barCols[i] : "bg-indigo-400"} h-1.5 rounded-full`} style={{width:`${Math.min(100,(r.comp/max)*100)}%`}} /></div>
-              <div className="flex flex-wrap gap-3 text-xs text-gray-500">
-                <span>👍 {getVotes(r.id)}</span>
-                {r.avg.voters > 0 && <><span>💥{r.avg.impact.toFixed(1)}</span><span>🔁{r.avg.frequency.toFixed(1)}</span><span>⚠️{r.avg.risk.toFixed(1)}</span><span>🚀{r.avg.leverage.toFixed(1)}</span></>}
-                <span className="font-bold text-indigo-600 ml-auto">Score {r.comp.toFixed(1)}</span>
-              </div>
-            </div>
-          </div>
-        ); })}
-    </div>
-  );
-}
-
-function ReadOutTab({ reqs, upvotes, scores }) {
-  const [activeTeam, setActiveTeam] = useState(TEAMS[0]);
-  const [cursor, setCursor]         = useState(0);
-  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
-  const getAvg   = id => {
-    const all = Object.values(scores[String(id)] || {});
-    if (!all.length) return { total:0, voters:0, impact:0, frequency:0, risk:0, leverage:0 };
-    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0),0)/v.length : 0; };
-    return { impact:avg("impact"), frequency:avg("frequency"), risk:avg("risk"), leverage:avg("leverage"), total:avg("impact")+avg("frequency")+avg("risk")+avg("leverage"), voters:all.length };
-  };
-  const composite   = r => getVotes(r.id)*2 + getAvg(r.id).total;
-  const activeTeams = [...new Set(reqs.map(r => r.team))];
-  const teamReqs    = reqs.filter(r => r.team === activeTeam).map(r => ({...r, comp:composite(r)})).sort((a,b) => b.comp-a.comp).slice(0,7);
-  const current     = teamReqs[cursor];
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">
-        {activeTeams.map(t => { const tc = teamColor(t); return <button key={t} onClick={() => { setActiveTeam(t); setCursor(0); }} className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all ${activeTeam===t ? tc.light : "border-gray-200 text-gray-500"}`}>{t}</button>; })}
-      </div>
-      {teamReqs.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements from {activeTeam} yet.</p></div>
-        : <>
-          {current && (
+      <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">{activeTeams.map(t=>{const tc=teamColor(t);return <button key={t} onClick={()=>{setActiveTeam(t);setCursor(0);}} className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all ${activeTeam===t?tc.light:"border-gray-200 text-gray-500"}`}>{t}</button>;})}</div>
+      {teamReqs.length===0
+        ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements from {activeTeam} yet.</p></div>
+        :<>
+          {current&&(
             <div className="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4 min-h-64">
-              <div className="flex items-center justify-between"><Badge cls={teamColor(current.team).badge}>{current.team}</Badge><span className="text-xs font-bold text-gray-400">{cursor+1} / {teamReqs.length}</span></div>
+              <div className="flex items-center justify-between"><Badge cls={teamColor(current.team).badge}>{current.team}</Badge><div className="flex items-center gap-2">{current.issueType&&<Badge cls={typeBadge(current.issueType)}>{current.issueType}</Badge>}<span className="text-xs font-bold text-gray-400">{cursor+1} / {teamReqs.length}</span></div></div>
               <p className="text-xl font-black text-gray-900 leading-snug">{current.problem}</p>
-              <div className="flex flex-wrap gap-2 items-center">{current.frequency && <div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]?.emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}{current.agentPotential && <Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}</div>
-              {current.roleplayExample && <div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">🎭 Roleplay evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
-              {current.definition && <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
-              <div className="flex gap-4 text-xs text-gray-500 pt-2 border-t"><span>👍 {getVotes(current.id)} votes</span>{getAvg(current.id).voters > 0 && <span>Score {composite(current).toFixed(1)}</span>}</div>
+              <div className="flex flex-wrap gap-2">{current.frequency&&<div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]?.emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}{current.agentPotential&&<Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}</div>
+              {current.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
+              {current.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
             </div>
           )}
-          <div className="flex gap-3">
-            <button onClick={() => setCursor(c => Math.max(0,c-1))} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button>
-            <button onClick={() => setCursor(c => Math.min(teamReqs.length-1,c+1))} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button>
-          </div>
-          <div className="space-y-1">
-            {teamReqs.map((r,i) => <button key={r.id} onClick={() => setCursor(i)} className={`w-full text-left px-4 py-2.5 rounded-xl text-xs transition-all flex items-center gap-3 ${cursor===i ? "bg-indigo-50 border border-indigo-200" : "hover:bg-gray-50"}`}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={`font-semibold flex-1 ${cursor===i ? "text-indigo-700" : "text-gray-700"}`}>{r.problem}</span><span className="text-gray-400">{r.frequency}</span></button>)}
-          </div>
+          <div className="flex gap-3"><button onClick={()=>setCursor(c=>Math.max(0,c-1))} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button><button onClick={()=>setCursor(c=>Math.min(teamReqs.length-1,c+1))} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button></div>
+          <div className="space-y-1">{teamReqs.map((r,i)=><button key={r.id} onClick={()=>setCursor(i)} className={`w-full text-left px-4 py-2.5 rounded-xl text-xs transition-all flex items-center gap-3 ${cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50"}`}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={`font-semibold flex-1 ${cursor===i?"text-indigo-700":"text-gray-700"}`}>{r.problem}</span><span className="text-gray-400">{r.frequency}</span></button>)}</div>
         </>
       }
     </div>
   );
 }
 
-function SynthesisTab({ reqs, upvotes, scores, onUpdateReq }) {
-  const getVotes = id => Object.values(upvotes[String(id)] || {}).filter(Boolean).length;
-  const getAvg   = id => {
-    const all = Object.values(scores[String(id)] || {});
-    if (!all.length) return { total:0, voters:0, impact:0, frequency:0, risk:0, leverage:0 };
-    const avg = f => { const v = all.filter(x => x[f]); return v.length ? v.reduce((s,x) => s+(x[f]||0),0)/v.length : 0; };
-    const i=avg("impact"), fr=avg("frequency"), r=avg("risk"), l=avg("leverage");
-    return { impact:i, frequency:fr, risk:r, leverage:l, total:i+fr+r+l, voters:all.length };
-  };
-  const composite  = r => getVotes(r.id)*2 + getAvg(r.id).total;
-  const autoBucket = c => c >= 12 ? "Must-fix" : c >= 7 ? "Scale enabler" : "Strategic bet";
-  const ranked = [...reqs].map(r => ({...r, comp:composite(r)})).sort((a,b) => b.comp-a.comp);
-  return (
+// ── Synthesis tab ─────────────────────────────────────────────
+function SynthesisTab({reqs,onUpdateReq}){
+  const getScore=r=>((r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0));
+  const ranked=[...reqs].sort((a,b)=>getScore(b)-getScore(a));
+  const allClusters=[...BASE_CLUSTERS];
+  const allCategories=[...BASE_CATEGORIES];
+  const autoBucket=s=>s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet";
+  return(
     <div className="space-y-6">
-      <div className="bg-white rounded-xl border p-4 text-sm text-gray-600 space-y-1"><p className="font-bold text-gray-800">Facilitator view — Colo / Ale</p><p className="text-xs">Assign each requirement to a cluster and category. Changes sync to Google Sheets in real time.</p></div>
-      {CLUSTERS.map(cluster => {
-        const items = ranked.filter(r => r.cluster === cluster || (cluster === "Unclustered" && !r.cluster));
-        if (!items.length) return null;
-        return (
-          <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-            <div className="bg-slate-700 px-4 py-3 flex justify-between items-center"><h3 className="font-bold text-white text-sm">🗂️ {cluster}</h3><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{items.length}</span></div>
-            <div className="divide-y">{items.map(r => {
-              const tc = teamColor(r.team); const suggested = autoBucket(r.comp);
-              return (
-                <div key={r.id} className="p-4 space-y-3">
-                  <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-                  <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.frequency && <Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}<Badge cls="bg-gray-100 text-gray-600">Score {r.comp.toFixed(1)}</Badge></div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Cluster</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.cluster||"Unclustered"} onChange={e => onUpdateReq(r.id,{cluster:e.target.value})}>{CLUSTERS.map(c => <option key={c}>{c}</option>)}</select></div>
-                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Category</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.category||""} onChange={e => onUpdateReq(r.id,{category:e.target.value})}><option value="">—</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
-                    <div><label className="text-xs font-bold text-gray-500 block mb-1">Bucket <span className="text-gray-300 font-normal">(auto: {suggested})</span></label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||""} onChange={e => onUpdateReq(r.id,{bucket:e.target.value})}><option value="">auto</option>{BUCKETS.map(b => <option key={b}>{b}</option>)}</select></div>
-                  </div>
-                  {r.category && <div className="text-xs text-gray-400 italic">{CAT_META[r.category]?.desc}</div>}
-                </div>
-              );
-            })}</div>
+      <div className="bg-white rounded-xl border p-4"><p className="font-bold text-gray-800 text-sm">Facilitator view — Colo / Ale</p><p className="text-xs text-gray-500 mt-0.5">Assign cluster and category. Changes sync in real time.</p></div>
+      {ranked.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:ranked.map(r=>{
+        const tc=teamColor(r.team);const score=getScore(r);const suggested=autoBucket(score);
+        return(
+          <div key={r.id} className="bg-white rounded-xl border shadow-sm p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+                <div className="flex flex-wrap gap-1.5 mt-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>
+              </div>
+              <div className="text-center flex-shrink-0 bg-indigo-50 rounded-xl px-3 py-2"><div className="text-2xl font-black text-indigo-600">{score}</div><div className="text-xs text-gray-400">score</div></div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Cluster</label><OtherSelect options={allClusters} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div>
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Category</label><OtherSelect options={allCategories} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/></div>
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Bucket <span className="text-gray-300 font-normal">(auto: {suggested})</span></label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||""} onChange={e=>onUpdateReq(r.id,{bucket:e.target.value})}><option value="">auto</option>{BUCKETS.map(b=><option key={b}>{b}</option>)}</select></div>
+            </div>
+            {r.category&&CAT_META[r.category]&&<p className="text-xs text-gray-400 italic">{CAT_META[r.category].desc}</p>}
           </div>
         );
       })}
@@ -497,183 +422,148 @@ function SynthesisTab({ reqs, upvotes, scores, onUpdateReq }) {
   );
 }
 
-async function gsJira(epicsPayload) {
-  const url = `${GS_URL}?action=jira&data=${encodeURIComponent(JSON.stringify(epicsPayload))}`;
-  const res = await fetch(url);
-  return await res.json();
+// ── Voting tab ───────────────────────────────────────────────
+function VotingTab({reqs,votes,votingClosed,user,onVote,onCloseVoting}){
+  const vid=user.team.toLowerCase().replace(/\s+/g,"-");
+  const myVotes=votes[vid]||{};
+  const myVotesList=Object.entries(myVotes).map(([id,pts])=>({id,pts})).sort((a,b)=>b.pts-a.pts);
+  const usedPoints=myVotesList.reduce((s,v)=>s+v.pts,0);
+  const maxPoints=6; // 3+2+1
+  const availablePoints=[3,2,1].filter(p=>!myVotesList.find(v=>v.pts===p));
+  const getMyVote=id=>myVotes[id]||0;
+  const getTotalVotes=id=>{let t=0;Object.values(votes).forEach(v=>{t+=(v[id]||0);});return t;};
+  const votersWhoVoted=Object.keys(votes).filter(v=>Object.keys(votes[v]||{}).length>0);
+  const ranked=[...reqs].map(r=>({...r,totalVotes:getTotalVotes(r.id),selfScore:((r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0))})).sort((a,b)=>(b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore));
+  const medals=["🥇","🥈","🥉"];
+  if(votingClosed) return(
+    <div className="space-y-4">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"><span className="text-2xl">🏁</span><div><p className="text-sm font-bold text-emerald-700">Voting closed!</p><p className="text-xs text-emerald-600">Final ranking by votes + self-score</p></div></div>
+      {ranked.map((r,i)=>{const tc=teamColor(r.team);return(
+        <div key={r.id} className={`bg-white rounded-xl border shadow-sm p-4 flex gap-3 items-start ${i<3?"border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:""}`}>
+          <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i]||`#${i+1}`}</div>
+          <div className="flex-1 min-w-0 space-y-1">
+            <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+            <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}</div>
+            <div className="flex gap-3 text-xs text-gray-500 pt-1"><span>🗳️ {r.totalVotes} vote pts</span><span>⭐ {r.selfScore} self score</span><span className="font-bold text-indigo-600 ml-auto">Total: {r.totalVotes+r.selfScore}</span></div>
+          </div>
+        </div>
+      );})}
+    </div>
+  );
+  return(
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border p-4 space-y-2">
+        <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-800">🗳️ Cast your votes</p><span className="text-xs text-gray-400">{votersWhoVoted.length} of {TEAMS.length} teams voted</span></div>
+        <p className="text-xs text-gray-500">You have 3 votes: worth <strong>3pts</strong>, <strong>2pts</strong>, and <strong>1pt</strong>. You can put multiple votes on the same item.</p>
+        <div className="flex gap-2 flex-wrap">
+          {[3,2,1].map(p=>{const used=myVotesList.find(v=>v.pts===p);return(<div key={p} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 ${used?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-400"}`}>{p}pt {used?`→ ${reqs.find(r=>String(r.id)===used.id)?.problem?.slice(0,20)+"…"||"voted":"available"}</div>);})}
+        </div>
+      </div>
+      {reqs.map(r=>{
+        const tc=teamColor(r.team);const myVote=getMyVote(r.id);const total=getTotalVotes(r.id);
+        return(
+          <div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${myVote>0?"border-indigo-300":""}`}>
+            <div className="p-4">
+              <div className="flex items-start gap-3">
+                <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}</div>
+                </div>
+                <div className="text-center flex-shrink-0"><div className="text-2xl font-black text-indigo-600">{total}</div><div className="text-xs text-gray-400">pts</div></div>
+              </div>
+              <div className="flex gap-2 mt-3">
+                {[3,2,1].map(p=>{const isActive=myVote===p;const isUsed=!isActive&&!!myVotesList.find(v=>v.pts===p);return(<button key={p} disabled={isUsed} onClick={()=>onVote(r.id,isActive?0:p)} className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all ${isActive?"bg-indigo-600 border-indigo-600 text-white":isUsed?"border-gray-100 text-gray-300 cursor-not-allowed":"border-gray-200 text-gray-500 hover:border-indigo-300"}`}>{isActive?"✓ ":""}{p}pt{p!==1?"s":""}</button>);})}
+                {myVote>0&&<button onClick={()=>onVote(r.id,0)} className="px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50">✕</button>}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <div className="bg-white rounded-xl border p-4 space-y-3">
+        <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-700">Close voting</p><span className="text-xs text-gray-400">{votersWhoVoted.length}/{TEAMS.length} teams voted</span></div>
+        {TEAMS.map(t=>{const v=t.toLowerCase().replace(/\s+/g,"-");const voted=Object.keys(votes[v]||{}).length>0;return <div key={t} className="flex items-center gap-2 text-xs"><div className={`w-2 h-2 rounded-full ${voted?"bg-emerald-500":"bg-gray-300"}`}/><span className={voted?"text-gray-700 font-semibold":"text-gray-400"}>{t}</span>{voted&&<span className="text-emerald-500">✓ voted</span>}</div>;})}
+        <button onClick={onCloseVoting} className="w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700">🏁 Close voting & show results</button>
+      </div>
+    </div>
+  );
 }
 
-function JiraTab({ reqs }) {
-  const [step, setStep]             = useState("select");
-  const [selectedReqIds, setSelected] = useState([]);
-  const [jsonInput, setJsonInput]   = useState("");
-  const [jsonError, setJsonError]   = useState("");
-  const [epics, setEpics]           = useState([]);
-  const [pushResult, setPushResult] = useState(null);
-  const [copied, setCopied]         = useState(false);
-
-  const clusterOf = r => r.cluster && r.cluster !== "Unclustered" ? r.cluster : "Unclustered";
-  const reqsWithCluster = reqs.filter(r => r.problem);
-  const byCluster = reqsWithCluster.reduce((acc, r) => {
-    const c = clusterOf(r); if (!acc[c]) acc[c] = []; acc[c].push(r); return acc;
-  }, {});
-  const toggleReq = id => setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
-  const toggleAll = () => setSelected(selectedReqIds.length === reqsWithCluster.length ? [] : reqsWithCluster.map(r => r.id));
-  const selectedReqs = reqsWithCluster.filter(r => selectedReqIds.includes(r.id));
-
-  const buildPrompt = () => {
-    const reqSummary = selectedReqs.map(r =>
-      `- ID: ${r.id}\n  Cluster: ${clusterOf(r)}\n  Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}\n  Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).filter(Boolean).join(", ")||"unknown"}`
-    ).join("\n");
-    return `You are a senior PM at Airpost, an AI-powered ad production platform.
-
-Group the following requirements into Jira epics. Multiple requirements can belong to the same epic if they are related. Be smart about grouping — don't create one epic per requirement if they can be combined.
-
-Requirements:
-${reqSummary}
-
-Respond ONLY with a valid JSON array. No explanation, no markdown, just the raw JSON array:
-[
-  {
-    "title": "Epic title",
-    "description": "Clear description of what this epic solves",
-    "bucket": "Must-fix" | "Scale enabler" | "Strategic bet",
-    "reqIds": [array of requirement IDs covered by this epic],
-    "tickets": [
-      {
-        "title": "Ticket title",
-        "role": "who benefits",
-        "goal": "what they want to achieve",
-        "acs": ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."]
-      }
-    ]
-  }
-]`;
+// ── Engineering tab ──────────────────────────────────────────
+function EngineeringTab({reqs}){
+  const [step,setStep]=useState("select"); // select | review | pushing | done
+  const [selectedIds,setSelected]=useState([]);
+  const [jsonInput,setJsonInput]=useState("");
+  const [jsonError,setJsonError]=useState("");
+  const [epics,setEpics]=useState([]);
+  const [pushResult,setPushResult]=useState(null);
+  const [copied,setCopied]=useState(false);
+  const clusterOf=r=>r.cluster&&r.cluster!=="Unclustered"?r.cluster:"Unclustered";
+  const byCluster=reqs.reduce((acc,r)=>{const c=clusterOf(r);if(!acc[c])acc[c]=[];acc[c].push(r);return acc;},{});
+  const toggleReq=id=>setSelected(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+  const toggleAll=()=>setSelected(selectedIds.length===reqs.length?[]:reqs.map(r=>r.id));
+  const selectedReqs=reqs.filter(r=>selectedIds.includes(r.id));
+  const buildPrompt=()=>{
+    const reqSummary=selectedReqs.map(r=>`- ID: ${r.id}\n  Type: ${r.issueType||"n/a"}\n  Cluster: ${clusterOf(r)}\n  Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}\n  Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).filter(Boolean).join(", ")||"unknown"}`).join("\n");
+    return `You are a senior PM at Airpost, an AI-powered ad production platform.\n\nGroup the following requirements into Jira epics. Multiple requirements can belong to the same epic if they are related. Be smart about grouping.\n\nRequirements:\n${reqSummary}\n\nRespond ONLY with a valid JSON array. No explanation, no markdown, just raw JSON:\n[\n  {\n    "title": "Epic title",\n    "description": "Clear description",\n    "bucket": "Must-fix" | "Scale enabler" | "Strategic bet",\n    "reqIds": [array of requirement IDs],\n    "tickets": [\n      {\n        "title": "Ticket title",\n        "role": "who benefits",\n        "goal": "what they want to achieve",\n        "acs": ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."]\n      }\n    ]\n  }\n]`;
   };
-
-  const copyAndOpen = async () => {
-    const prompt = buildPrompt();
-    try { await navigator.clipboard.writeText(prompt); } catch {}
-    setCopied(true);
-    setTimeout(() => setCopied(false), 3000);
-    window.open("https://claude.ai", "_blank");
+  const copyAndOpen=async()=>{
+    try{await navigator.clipboard.writeText(buildPrompt());}catch{}
+    setCopied(true);setTimeout(()=>setCopied(false),4000);
+    window.open("https://claude.ai","_blank");
     setStep("paste");
   };
-
-  const parseJson = () => {
+  const parseJson=()=>{
     setJsonError("");
-    try {
-      const parsed = JSON.parse(jsonInput.trim().replace(/```json|```/g, "").trim());
-      if (!Array.isArray(parsed)) throw new Error("Expected a JSON array");
-      setEpics(parsed.map((e, i) => ({ ...e, id: Date.now() + i, approved: false,
-        reqIds: (e.reqIds||[]).map(id => typeof id === "string" ? id : String(id))
-      })));
+    try{
+      const parsed=JSON.parse(jsonInput.trim().replace(/```json|```/g,"").trim());
+      if(!Array.isArray(parsed))throw new Error("Expected a JSON array");
+      setEpics(parsed.map((e,i)=>({...e,id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(id=>typeof id==="string"?id:String(id))})));
       setStep("review");
-    } catch(err) { setJsonError("Invalid JSON — paste exactly what Claude gave you: " + err.message); }
+    }catch(err){setJsonError("Invalid JSON — paste exactly what Claude gave you: "+err.message);}
   };
-
-  const updateEpic   = (idx, patch) => setEpics(p => p.map((e,i) => i===idx ? {...e,...patch} : e));
-  const updateTicket = (eIdx, tIdx, patch) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.map((t,j) => j===tIdx ? {...t,...patch} : t)} : e));
-  const removeTicket = (eIdx, tIdx) => setEpics(p => p.map((e,i) => i===eIdx ? {...e, tickets: e.tickets.filter((_,j) => j!==tIdx)} : e));
-  const approvedEpics = epics.filter(e => e.approved);
-
-  const pushToJira = async () => {
-    if (!approvedEpics.length) return;
+  const updateEpic=(idx,patch)=>setEpics(p=>p.map((e,i)=>i===idx?{...e,...patch}:e));
+  const updateTicket=(eIdx,tIdx,patch)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.map((t,j)=>j===tIdx?{...t,...patch}:t)}:e));
+  const removeTicket=(eIdx,tIdx)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.filter((_,j)=>j!==tIdx)}:e));
+  const approvedEpics=epics.filter(e=>e.approved);
+  const pushToJira=async()=>{
+    if(!approvedEpics.length)return;
     setStep("pushing");
-    try {
-      const result = await gsJira(approvedEpics);
-      setPushResult(result);
-    } catch(e) { setPushResult({ ok: false, error: String(e) }); }
+    const result=await gsJira(approvedEpics);
+    setPushResult(result);
     setStep("done");
   };
-
-  // ── DONE ──
-  if (step === "done") return (
+  if(step==="done")return(
     <div className="space-y-4">
       {pushResult?.ok
-        ? <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3">
-            <p className="text-5xl">🎉</p>
-            <p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p>
-            <p className="text-sm text-emerald-600">Epics created: <strong>{pushResult.keys?.join(", ")}</strong></p>
-            <p className="text-xs text-emerald-500">Sprint "Airpost Offsite 2026" created with all epics and subtasks.</p>
-          </div>
-        : <div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3">
-            <p className="text-5xl">⚠️</p>
-            <p className="text-xl font-black text-rose-700">Something went wrong</p>
-            <p className="text-xs text-rose-500 font-mono">{pushResult?.error || "Unknown error"}</p>
-          </div>
+        ?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys?.join(", ")}</strong></p><p className="text-xs text-emerald-500">Sprint "{pushResult.sprint||"Airpost Offsite 2026"}" created.</p></div>
+        :<div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">⚠️</p><p className="text-xl font-black text-rose-700">Something went wrong</p><p className="text-xs text-rose-500 font-mono">{pushResult?.error||"Unknown error"}</p></div>
       }
-      <button onClick={() => { setStep("select"); setSelected([]); setEpics([]); setJsonInput(""); setPushResult(null); }} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
+      <button onClick={()=>{setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);}} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
     </div>
   );
-
-  // ── PUSHING ──
-  if (step === "pushing") return (
-    <div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400">
-      <div className="text-6xl animate-bounce">🚀</div>
-      <p className="text-sm font-bold text-gray-600">Pushing to Jira…</p>
-      <p className="text-xs">Creating epics, subtasks and sprint</p>
-    </div>
-  );
-
-  // ── REVIEW EPICS ──
-  if (step === "review") return (
+  if(step==="pushing")return(<div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400"><div className="text-6xl animate-bounce">🚀</div><p className="text-sm font-bold text-gray-600">Pushing to Jira…</p><p className="text-xs">Creating epics, subtasks and sprint</p></div>);
+  if(step==="review")return(
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
-        <div>
-          <p className="text-sm font-bold text-gray-800">Step 3 — Review & Approve</p>
-          <p className="text-xs text-gray-400">Edit epics and tickets, then approve what goes to Jira.</p>
-        </div>
-        <button onClick={() => setStep("paste")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
-      </div>
-      {epics.map((epic, eIdx) => {
-        const epicReqs = selectedReqs.filter(r => (epic.reqIds||[]).includes(String(r.id)) || (epic.reqIds||[]).includes(r.id));
-        return (
-          <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved ? "border-emerald-400" : "border-gray-200"}`}>
-            <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved ? "bg-emerald-50" : "bg-gray-50"}`}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>
-                {epic.bucket && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}
-                <span className="text-xs text-gray-400">{epicReqs.length} req{epicReqs.length!==1?"s":""} · {epic.tickets?.length||0} tickets</span>
-              </div>
-              <button onClick={() => updateEpic(eIdx, {approved: !epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>
-                {epic.approved ? "✓ Approved" : "Approve"}
-              </button>
+      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Review & Approve Epics</p><p className="text-xs text-gray-400">Edit epics and tickets, approve what goes to Jira.</p></div><button onClick={()=>setStep("paste")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
+      {epics.map((epic,eIdx)=>{
+        const epicReqs=selectedReqs.filter(r=>(epic.reqIds||[]).includes(String(r.id))||(epic.reqIds||[]).includes(r.id));
+        return(
+          <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved?"border-emerald-400":"border-gray-200"}`}>
+            <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved?"bg-emerald-50":"bg-gray-50"}`}>
+              <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>{epic.bucket&&<span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}<span className="text-xs text-gray-400">{epicReqs.length} reqs · {epic.tickets?.length||0} tickets</span></div>
+              <button onClick={()=>updateEpic(eIdx,{approved:!epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved?"bg-emerald-500 border-emerald-500 text-white":"border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>{epic.approved?"✓ Approved":"Approve"}</button>
             </div>
             <div className="p-4 space-y-3">
-              <div>
-                <label className="text-xs font-bold text-gray-500 block mb-1">Title</label>
-                <input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title} onChange={e => updateEpic(eIdx, {title: e.target.value})} />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-gray-500 block mb-1">Description</label>
-                <textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e => updateEpic(eIdx, {description: e.target.value})} />
-              </div>
-              {epicReqs.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-xs font-bold text-gray-400">Linked requirements</p>
-                  {epicReqs.map(r => <div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}
-                </div>
-              )}
-              {epic.tickets?.length > 0 && (
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Title</label><input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title} onChange={e=>updateEpic(eIdx,{title:e.target.value})}/></div>
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Description</label><textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e=>updateEpic(eIdx,{description:e.target.value})}/></div>
+              {epicReqs.length>0&&<div className="space-y-1"><p className="text-xs font-bold text-gray-400">Linked requirements</p>{epicReqs.map(r=><div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}</div>}
+              {epic.tickets?.length>0&&(
                 <div className="space-y-2 pt-1 border-t">
                   <p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
-                  {epic.tickets.map((t, tIdx) => (
+                  {epic.tickets.map((t,tIdx)=>(
                     <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                      <div className="flex gap-2 items-center">
-                        <span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span>
-                        <input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e => updateTicket(eIdx,tIdx,{title:e.target.value})} />
-                        <button onClick={() => removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0 leading-none">×</button>
-                      </div>
-                      {t.role && t.goal && <p className="text-xs text-gray-400 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}
-                      <div className="space-y-1">
-                        {(t.acs||[]).map((ac, ai) => (
-                          <div key={ai} className="flex gap-2 items-start">
-                            <span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span>
-                            <input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e => { const acs=[...t.acs]; acs[ai]=e.target.value; updateTicket(eIdx,tIdx,{acs}); }} />
-                          </div>
-                        ))}
-                      </div>
+                      <div className="flex gap-2 items-center"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e=>updateTicket(eIdx,tIdx,{title:e.target.value})}/><button onClick={()=>removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0 leading-none">×</button></div>
+                      {t.role&&t.goal&&<p className="text-xs text-gray-400 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}
+                      <div className="space-y-1">{(t.acs||[]).map((ac,ai)=><div key={ai} className="flex gap-2 items-start"><span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span><input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e=>{const acs=[...t.acs];acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs});}}/></div>)}</div>
                     </div>
                   ))}
                 </div>
@@ -683,377 +573,144 @@ Respond ONLY with a valid JSON array. No explanation, no markdown, just the raw 
         );
       })}
       <div className="sticky bottom-4 pt-2">
-        <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl">
-          🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira
-        </button>
-        {!approvedEpics.length && <p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
+        <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira</button>
+        {!approvedEpics.length&&<p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
       </div>
     </div>
   );
-
-  // ── PASTE JSON ──
-  if (step === "paste") return (
+  if(step==="paste")return(
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
-        <div>
-          <p className="text-sm font-bold text-gray-800">Step 2 — Paste Claude's response</p>
-          <p className="text-xs text-gray-400">Copy the JSON array Claude gave you and paste it below.</p>
-        </div>
-        <button onClick={() => setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
-      </div>
+      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Step 2 — Paste Claude's response</p><p className="text-xs text-gray-400">Copy the JSON array Claude gave you and paste it below.</p></div><button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
       <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-2">
         <p className="text-xs font-bold text-indigo-700">In Claude.ai:</p>
-        <ol className="text-xs text-indigo-600 space-y-1 list-decimal list-inside">
-          <li>Paste the prompt (Ctrl+V / Cmd+V)</li>
-          <li>Wait for Claude to respond</li>
-          <li>Copy the entire JSON array it returns</li>
-          <li>Come back here and paste it below</li>
-        </ol>
-        <a href="https://claude.ai" target="_blank" className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">
-          Open Claude.ai ↗
-        </a>
+        <ol className="text-xs text-indigo-600 space-y-1 list-decimal list-inside"><li>Paste the prompt (Ctrl+V / Cmd+V)</li><li>Wait for Claude to respond</li><li>Copy the entire JSON array</li><li>Come back here and paste it below</li></ol>
+        <a href="https://claude.ai" target="_blank" className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">Open Claude.ai ↗</a>
       </div>
-      <div>
-        <label className="text-xs font-bold text-gray-500 block mb-2">Paste JSON here</label>
-        <textarea
-          className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError ? "border-rose-400 bg-rose-50" : "border-gray-200 focus:border-indigo-400"}`}
-          placeholder={'[\n  {\n    "title": "...",\n    "description": "...",\n    ...\n  }\n]'}
-          value={jsonInput}
-          onChange={e => { setJsonInput(e.target.value); setJsonError(""); }}
-        />
-        {jsonError && <p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
+      <div><label className="text-xs font-bold text-gray-500 block mb-2">Paste JSON here</label>
+        <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400 bg-rose-50":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  {\n    "title": "...",\n    ...\n  }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
+        {jsonError&&<p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
       </div>
-      <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">
-        Parse & Review Epics →
-      </button>
+      <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">Parse & Review Epics →</button>
     </div>
   );
-
-  // ── SELECT REQUIREMENTS ──
-  return (
+  return(
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 space-y-1">
-        <p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p>
-        <p className="text-xs text-gray-500">Pick the requirements you want to turn into Jira epics. We'll build a prompt for Claude to group them.</p>
-      </div>
-      {reqsWithCluster.length === 0
-        ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-        : <>
-          <div className="bg-white rounded-xl border p-3 flex items-center justify-between">
-            <button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">
-              {selectedReqIds.length === reqsWithCluster.length ? "Deselect all" : "Select all"}
-            </button>
-            <span className="text-xs text-gray-400">{selectedReqIds.length} of {reqsWithCluster.length} selected</span>
-          </div>
-          {Object.entries(byCluster).map(([cluster, clReqs]) => (
-            <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-              <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between">
-                <span className="text-xs font-bold text-white">🗂️ {cluster}</span>
-                <span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span>
+      <div className="bg-white rounded-xl border p-4 space-y-1"><p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p><p className="text-xs text-gray-500">Pick requirements to turn into Jira epics. We'll build a prompt for Claude to group them.</p></div>
+      {reqs.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:<>
+        <div className="bg-white rounded-xl border p-3 flex items-center justify-between"><button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===reqs.length?"Deselect all":"Select all"}</button><span className="text-xs text-gray-400">{selectedIds.length} of {reqs.length} selected</span></div>
+        {Object.entries(byCluster).map(([cluster,clReqs])=>(
+          <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+            <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between"><span className="text-xs font-bold text-white">🗂️ {cluster}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span></div>
+            <div className="divide-y">{clReqs.map(r=>{const tc=teamColor(r.team);const sel=selectedIds.includes(r.id);return(
+              <div key={r.id} onClick={()=>toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel?"bg-indigo-50":"hover:bg-gray-50"}`}>
+                <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel?"bg-indigo-600 border-indigo-600":"border-gray-300"}`}>{sel&&<span className="text-white text-xs">✓</span>}</div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}</div>
+                  {r.definition&&<p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
+                </div>
               </div>
-              <div className="divide-y">
-                {clReqs.map(r => {
-                  const tc = teamColor(r.team);
-                  const sel = selectedReqIds.includes(r.id);
-                  return (
-                    <div key={r.id} onClick={() => toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel ? "bg-indigo-50" : "hover:bg-gray-50"}`}>
-                      <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel ? "bg-indigo-600 border-indigo-600" : "border-gray-300"}`}>
-                        {sel && <span className="text-white text-xs">✓</span>}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-semibold ${sel ? "text-indigo-800" : "text-gray-800"}`}>{r.problem}</p>
-                        <div className="flex flex-wrap gap-1.5 mt-1">
-                          <Badge cls={tc.badge}>{r.team}</Badge>
-                          {r.frequency && <Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}
-                          {r.agentPotential && <Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
-                        </div>
-                        {r.definition && <p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          <div className="sticky bottom-4 pt-2">
-            <button onClick={copyAndOpen} disabled={!selectedReqIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-xl transition-all">
-              {copied ? "✅ Prompt copied! Claude.ai is opening…" : `📋 Copy prompt & open Claude.ai`}
-            </button>
-            {selectedReqIds.length > 0 && !copied && <p className="text-center text-xs text-gray-400 mt-2">Will copy the prompt and open Claude.ai in a new tab</p>}
-          </div>
-        </>
-      }
-    </div>
-  );
-}
-
-function EngineeringTab({ reqs, epics, onSaveEpic }) {
-  const [view,        setView]    = useState("board");
-  const [editing,     setEditing] = useState(null);
-  const [form,        setForm]    = useState(null);
-  const [aiLoading,   setAiLoad]  = useState(false);
-  const [translating, setTrans]   = useState(false);
-  const [showPicker,  setPicker]  = useState(false);
-  const [detailEpic,  setDetail]  = useState(null);
-  const f = (k, v) => setForm(p => ({...p, [k]: v}));
-  const startNew  = () => { setForm({...EMPTY_EPIC, tickets:[]}); setEditing("new"); setView("form"); };
-  const startEdit = ep => { setForm({...ep}); setEditing(ep.id); setView("form"); };
-  const openDetail= ep => { setDetail(ep); setView("detail"); };
-  const generateTickets = async () => {
-    if (!form.title || !form.reqIds.length) return;
-    setAiLoad(true);
-    const linkedReqs = reqs.filter(r => form.reqIds.includes(r.id));
-    const reqSummary = linkedReqs.map(r => `- Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround today: ${r.workaround||"n/a"}\n  Affected: ${r.stakeholders?.join(", ")||"unknown"}\n  Pipeline stage: ${r.pipelineStage||"n/a"}`).join("\n");
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1200,
-          messages: [{ role:"user", content:`You are a senior PM at an AI-powered ad production platform. Generate 2-4 lean, concrete Jira-ready user stories for this epic.\n\nEpic: ${form.title}\nDescription: ${form.description||"n/a"}\nStack area: ${form.stackArea||"n/a"}\n\nRequirements:\n${reqSummary}\n\nRules: English only. Each ticket independent. Format: JSON array, each item: title, role, goal, acs (3-4 Given/When/Then strings). Respond ONLY with the JSON array.` }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.find(c => c.type==="text")?.text || "[]";
-      setForm(p => ({...p, tickets: JSON.parse(text.replace(/```json|```/g,"").trim())}));
-    } catch (e) { console.error(e); }
-    setAiLoad(false);
-  };
-  const save = async () => {
-    if (!form.title?.trim()) return;
-    setTrans(true);
-    const translated = await translateToEnglish({ title:form.title, description:form.description||"", tradeoffs:form.tradeoffs||"" });
-    setTrans(false);
-    const ep = editing === "new" ? {...form, ...translated, id:Date.now()} : {...form, ...translated, id:editing};
-    onSaveEpic(ep); setView("board"); setEditing(null); setForm(null);
-  };
-  const ta  = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 resize-none";
-  const sel = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500 bg-white";
-  const inp = "w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-indigo-500";
-
-  if (view === "detail" && detailEpic) {
-    const ep = epics.find(e => e.id === detailEpic.id) || detailEpic;
-    const linkedReqs = reqs.filter(r => ep.reqIds?.includes(r.id));
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-3"><button onClick={() => setView("board")} className="text-xs text-gray-500 hover:text-gray-800">← Board</button><button onClick={() => startEdit(ep)} className="ml-auto text-xs text-indigo-500 hover:underline">✏️ Edit</button></div>
-        <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3">
-          <h2 className="text-lg font-black text-gray-900">{ep.title}</h2>
-          <div className="flex flex-wrap gap-2">{ep.sizing&&<Badge cls={sizingColor(ep.sizing)}>{ep.sizing}</Badge>}{ep.category&&<Badge cls={catBadge(ep.category)}>{ep.category}</Badge>}{ep.stackArea&&<Badge cls="bg-gray-100 text-gray-600">{ep.stackArea}</Badge>}{ep.bucket&&<Badge cls={buckBadge(ep.bucket)}>{ep.bucket}</Badge>}{ep.assignee&&<Badge cls="bg-slate-100 text-slate-700">👤 {ep.assignee}</Badge>}</div>
-          {ep.description && <p className="text-sm text-gray-600 leading-relaxed">{ep.description}</p>}
-          {ep.tradeoffs && <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3"><p className="text-xs font-bold text-amber-700 mb-1">⚠️ Trade-offs</p><p className="text-sm text-amber-800">{ep.tradeoffs}</p></div>}
-        </div>
-        {linkedReqs.length > 0 && <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3"><p className="text-sm font-bold text-gray-700">🔗 Linked Requirements ({linkedReqs.length})</p>{linkedReqs.map(r => <div key={r.id} className="border rounded-xl p-3 space-y-1"><p className="text-xs font-semibold text-gray-800">{r.problem}</p><div className="flex flex-wrap gap-1"><Badge cls={teamColor(r.team).badge}>{r.team}</Badge>{r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}</div>{r.definition&&<p className="text-xs text-emerald-700 italic">🎯 {r.definition}</p>}</div>)}</div>}
-        {ep.tickets?.length > 0 && <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-3"><p className="text-sm font-bold text-gray-700">🎫 Tickets ({ep.tickets.length})</p>{ep.tickets.map((t,i) => <div key={i} className="border-2 border-gray-100 rounded-xl p-4 space-y-2"><div className="flex items-center gap-2"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded">T{i+1}</span><p className="text-sm font-bold text-gray-800">{t.title}</p></div>{t.role&&t.goal&&<p className="text-xs text-gray-500">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}{t.acs?.filter(a=>a).length>0&&<div className="space-y-1 pt-1">{t.acs.filter(a=>a).map((ac,ai) => <div key={ai} className="flex gap-2 items-start"><span className="text-green-500 mt-0.5 flex-shrink-0">✓</span><p className="text-xs text-gray-600">{ac}</p></div>)}</div>}</div>)}</div>}
-      </div>
-    );
-  }
-  if (view === "form" && form) return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3"><button onClick={() => { setView("board"); setEditing(null); setForm(null); }} className="text-xs text-gray-500 hover:text-gray-800">← Board</button><h2 className="text-base font-bold text-gray-800">{editing==="new"?"New Epic":"Edit Epic"}</h2></div>
-      <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-4">
-        <div><label className="text-sm font-bold text-gray-700">Epic Title *</label><input className={`${inp} mt-1`} value={form.title} onChange={e => f("title",e.target.value)} placeholder="e.g. Mandatory brief field validation at handoff" /></div>
-        <div><label className="text-sm font-bold text-gray-700">Description</label><textarea className={`${ta} mt-1`} rows={3} value={form.description} onChange={e => f("description",e.target.value)} placeholder="What problem does this epic solve?" /></div>
-        <div className="grid grid-cols-2 gap-3">
-          <div><label className="text-sm font-bold text-gray-700">Stack Area</label><select className={`${sel} mt-1`} value={form.stackArea} onChange={e => f("stackArea",e.target.value)}><option value="">Where does it live?</option>{STACK_AREAS.map(s => <option key={s}>{s}</option>)}</select></div>
-          <div><label className="text-sm font-bold text-gray-700">Sizing</label><select className={`${sel} mt-1`} value={form.sizing} onChange={e => f("sizing",e.target.value)}><option value="">Rough size…</option>{SIZINGS.map(s => <option key={s}>{s}</option>)}</select></div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div><label className="text-sm font-bold text-gray-700">Category</label><select className={`${sel} mt-1`} value={form.category} onChange={e => f("category",e.target.value)}><option value="">Select…</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
-          <div><label className="text-sm font-bold text-gray-700">Bucket</label><select className={`${sel} mt-1`} value={form.bucket} onChange={e => f("bucket",e.target.value)}><option value="">Select…</option>{BUCKETS.map(b => <option key={b}>{b}</option>)}</select></div>
-        </div>
-        <div><label className="text-sm font-bold text-gray-700">Assignee</label><select className={`${sel} mt-1`} value={form.assignee} onChange={e => f("assignee",e.target.value)}><option value="">Assign to engineer…</option>{ENGINEERS.map(e => <option key={e}>{e}</option>)}</select></div>
-        <div><label className="text-sm font-bold text-gray-700">Trade-offs</label><textarea className={`${ta} mt-1`} rows={2} value={form.tradeoffs} onChange={e => f("tradeoffs",e.target.value)} placeholder="What are we giving up or risking?" /></div>
-        <div>
-          <div className="flex items-center justify-between mb-2"><label className="text-sm font-bold text-gray-700">Linked Requirements ({form.reqIds.length})</label><button onClick={() => setPicker(p => !p)} className="text-xs text-indigo-600 hover:underline">{showPicker?"Hide":"+ Add"}</button></div>
-          {showPicker && <div className="border rounded-xl overflow-hidden max-h-48 overflow-y-auto">{reqs.map(r => <label key={r.id} className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 ${form.reqIds.includes(r.id)?"bg-indigo-50":""}`}><input type="checkbox" checked={form.reqIds.includes(r.id)} onChange={e => f("reqIds", e.target.checked ? [...form.reqIds,r.id] : form.reqIds.filter(x=>x!==r.id))} className="mt-0.5 flex-shrink-0"/><div className="min-w-0"><p className="text-xs font-semibold text-gray-800 line-clamp-1">{r.problem}</p><span className="text-xs text-gray-400">{r.team}</span></div></label>)}</div>}
-        </div>
-      </div>
-      <div className="bg-white rounded-2xl border shadow-sm p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div><p className="text-sm font-bold text-gray-800">Tickets</p><p className="text-xs text-gray-400">AI generates from linked requirements.</p></div>
-          <button onClick={generateTickets} disabled={aiLoading||!form.title||!form.reqIds.length} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 disabled:opacity-40">{aiLoading ? <span className="animate-pulse">Generating…</span> : <><span>✨</span><span>AI suggest</span></>}</button>
-        </div>
-        {form.tickets.map((t, ti) => (
-          <div key={ti} className="border-2 border-gray-100 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between"><span className="text-xs font-black text-gray-400">TICKET {ti+1}</span><button onClick={() => f("tickets", form.tickets.filter((_,i)=>i!==ti))} className="text-xs text-red-400">Remove</button></div>
-            <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.title} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],title:e.target.value};f("tickets",ts);}} placeholder="Title"/>
-            <div className="grid grid-cols-2 gap-2">
-              <input className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.role} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],role:e.target.value};f("tickets",ts);}} placeholder="Role"/>
-              <input className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={t.goal} onChange={e=>{const ts=[...form.tickets];ts[ti]={...ts[ti],goal:e.target.value};f("tickets",ts);}} placeholder="Goal"/>
-            </div>
-            {(t.acs||[]).map((ac,ai) => <div key={ai} className="flex gap-2"><span className="text-xs text-gray-400 mt-2.5">AC{ai+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none" value={ac} onChange={e=>{const ts=[...form.tickets];const acs=[...ts[ti].acs];acs[ai]=e.target.value;ts[ti]={...ts[ti],acs};f("tickets",ts);}} placeholder="Given… When… Then…"/></div>)}
+            );})}</div>
           </div>
         ))}
-        <button onClick={() => f("tickets",[...form.tickets,{...EMPTY_TICKET,acs:["","",""]}])} className="w-full py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-xs text-gray-400 hover:border-indigo-300">+ Add ticket manually</button>
-      </div>
-      <button onClick={save} disabled={!form.title?.trim()||translating} className="w-full bg-indigo-600 text-white rounded-xl py-3.5 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-md">{translating?"Saving…":"Save Epic ✓"}</button>
-    </div>
-  );
-  const bucketGroups = {"Must-fix":epics.filter(e=>e.bucket==="Must-fix"),"Scale enabler":epics.filter(e=>e.bucket==="Scale enabler"),"Strategic bet":epics.filter(e=>e.bucket==="Strategic bet"),"Unassigned":epics.filter(e=>!e.bucket)};
-  const bucketStyles = {"Must-fix":{header:"bg-rose-600",icon:"🔥"},"Scale enabler":{header:"bg-amber-500",icon:"📈"},"Strategic bet":{header:"bg-indigo-600",icon:"🚀"},"Unassigned":{header:"bg-gray-500",icon:"📋"}};
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between"><div><h2 className="text-base font-bold text-gray-800">⚙️ Engineering Board</h2><p className="text-xs text-gray-400">{epics.length} epics · {epics.reduce((s,e)=>s+(e.tickets?.length||0),0)} tickets</p></div><button onClick={startNew} className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs hover:bg-indigo-700">+ New Epic</button></div>
-      {epics.length === 0 ? <div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">⚙️</p><p className="text-sm">No epics yet.</p></div>
-        : Object.entries(bucketGroups).map(([bucket, items]) => {
-          if (!items.length) return null;
-          const bs = bucketStyles[bucket];
-          return (
-            <div key={bucket} className="rounded-2xl border shadow-sm overflow-hidden">
-              <div className={`${bs.header} px-4 py-3 flex items-center justify-between`}><span className="text-sm font-black text-white">{bs.icon} {bucket}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{items.length}</span></div>
-              <div className="bg-white divide-y">{items.map(ep => (
-                <div key={ep.id} className="p-4 hover:bg-gray-50 flex items-start gap-3">
-                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => openDetail(ep)}>
-                    <p className="text-sm font-bold text-gray-800">{ep.title}</p>
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
-                      {ep.sizing&&<Badge cls={sizingColor(ep.sizing)}>{ep.sizing.split("–")[0].trim()}</Badge>}
-                      {ep.category&&<Badge cls={catBadge(ep.category)}>{ep.category}</Badge>}
-                      {ep.assignee&&<Badge cls="bg-slate-100 text-slate-700">👤 {ep.assignee}</Badge>}
-                      {ep.tickets?.length>0&&<Badge cls="bg-indigo-50 text-indigo-600">🎫 {ep.tickets.length}</Badge>}
-                    </div>
-                  </div>
-                  <button onClick={() => startEdit(ep)} className="text-xs text-indigo-400 hover:text-indigo-600">Edit</button>
-                </div>
-              ))}</div>
-            </div>
-          );
-        })}
+        <div className="sticky bottom-4 pt-2"><button onClick={copyAndOpen} disabled={!selectedIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">{copied?"✅ Prompt copied! Claude.ai is opening…":"📋 Copy prompt & open Claude.ai"}</button></div>
+      </>}
     </div>
   );
 }
 
-function App() {
-  const [user,       setUser]    = useState(null);
-  const [day,        setDay]     = useState(1);
-  const [tab,        setTab]     = useState(0);
-  const [reqs,       setReqs]    = useState([]);
-  const [scores,     setScores]  = useState({});
-  const [upvotes,    setUpvotes] = useState({});
-  const [epics,      setEpics]   = useState([]);
-  const [loading,    setLoading] = useState(true);
-  const [syncStatus, setSync]    = useState("idle");
-  const [lastRefresh,setRefresh] = useState(null);
+// ── Main App ─────────────────────────────────────────────────
+function App(){
+  const [user,setUser]=useState(null);
+  const [day,setDay]=useState(1);
+  const [tab,setTab]=useState(0);
+  const [reqs,setReqs]=useState([]);
+  const [votes,setVotes]=useState({});
+  const [votingClosed,setVotingClosed]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const [syncStatus,setSync]=useState("idle");
+  const [lastRefresh,setRefresh]=useState(null);
 
-  const loadAll = async () => {
-    const [reqRows, epicRows, su] = await Promise.all([gsGet("requirements"), gsGet("epics"), loadScoresUpvotes()]);
-    setReqs(reqRows); setEpics(epicRows); setScores(su.scores); setUpvotes(su.upvotes);
+  const loadAll=async()=>{
+    const [reqRows,su]=await Promise.all([gsGet("requirements"),loadScoresUpvotes()]);
+    setReqs(reqRows);
+    setVotes(su.upvotes||{});
+    setVotingClosed(su.votingClosed||false);
     setRefresh(new Date());
   };
 
-  useEffect(() => { loadAll().finally(() => setLoading(false)); }, []);
+  useEffect(()=>{loadAll().finally(()=>setLoading(false));},[]);
+  useEffect(()=>{if(!user)return;const iv=setInterval(loadAll,30000);return()=>clearInterval(iv);},[user]);
 
-  useEffect(() => {
-    if (!user) return;
-    const iv = setInterval(loadAll, 30000);
-    return () => clearInterval(iv);
-  }, [user]);
+  const withSync=async fn=>{setSync("syncing");try{await fn();setSync("ok");setTimeout(()=>setSync("idle"),2500);}catch{setSync("error");setTimeout(()=>setSync("idle"),4000);}};
 
-  const addReq = async req => {
-    setSync("syncing");
-    try {
-      await gsUpsert("requirements", req);
-      await loadAll();
-      setSync("ok"); setTimeout(() => setSync("idle"), 2500);
-    } catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  const addReq=async req=>{setSync("syncing");try{await gsUpsert("requirements",req);await loadAll();setSync("ok");setTimeout(()=>setSync("idle"),2500);}catch{setSync("error");setTimeout(()=>setSync("idle"),4000);}};
+
+  const updateReq=async(id,patch)=>{
+    const updated=reqs.map(r=>r.id===id?{...r,...patch}:r);setReqs(updated);
+    const full=updated.find(r=>r.id===id);
+    await withSync(()=>gsUpsert("requirements",full));
   };
 
-  const updateReq = async (id, patch) => {
-    const updated = reqs.map(r => r.id === id ? {...r,...patch} : r);
-    setReqs(updated);
-    const full = updated.find(r => r.id === id);
-    setSync("syncing");
-    try { await gsUpsert("requirements", full); setSync("ok"); setTimeout(() => setSync("idle"), 2500); }
-    catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  const deleteReq=async id=>{
+    setReqs(p=>p.filter(r=>r.id!==id));
+    await withSync(()=>gsDelete("requirements",id));
   };
 
-  const toggleUpvote = async id => {
-    const vid = user.team.toLowerCase().replace(/\s+/g,"-");
-    const sid = String(id);
-    const cur = upvotes[sid] || {};
-    const next = { ...upvotes, [sid]: cur[vid] ? {...cur} : {...cur, [vid]:true} };
-    if (cur[vid]) delete next[sid][vid];
-    setUpvotes(next);
-    await saveScoresUpvotes(sid, scores, next);
-  };
-
-  const setScore = async (id, field, val) => {
-    const vid = user.team.toLowerCase().replace(/\s+/g,"-");
-    const sid = String(id);
-    setScores(prev => {
-      const prevReq    = prev[sid] || {};
-      const prevVoter  = prevReq[vid] || {};
-      const next = {
-        ...prev,
-        [sid]: {
-          ...prevReq,
-          [vid]: { ...prevVoter, [field]: val }
-        }
-      };
-      saveScoresUpvotes(sid, next, upvotes);
+  const castVote=async(reqId,pts)=>{
+    const vid=user.team.toLowerCase().replace(/\s+/g,"-");
+    const sid=String(reqId);
+    setVotes(prev=>{
+      const myVotes={...(prev[vid]||{})};
+      if(pts===0){delete myVotes[sid];}else{myVotes[sid]=pts;}
+      const next={...prev,[vid]:myVotes};
+      gsUpsert("scores_upvotes",{id:vid,scores:{},upvotes:myVotes});
       return next;
     });
   };
 
-  const saveEpic = async ep => {
-    const updated = epics.find(e=>e.id===ep.id) ? epics.map(e=>e.id===ep.id?ep:e) : [...epics,ep];
-    setEpics(updated);
-    setSync("syncing");
-    try { await gsUpsert("epics", ep); setSync("ok"); setTimeout(() => setSync("idle"), 2500); }
-    catch { setSync("error"); setTimeout(() => setSync("idle"), 4000); }
+  const closeVoting=async()=>{
+    setVotingClosed(true);
+    await gsUpsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});
   };
 
-  if (loading) return (
-    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}>
-      <div style={{fontSize:"2.5rem"}}>⚡</div>
-      <p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p>
-    </div>
-  );
-  if (!user) return <EntryScreen onEnter={(t,d) => { setUser({team:t}); setDay(d); setTab(0); }} />;
+  if(loading)return(<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}><div style={{fontSize:"2.5rem"}}>⚡</div><p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p></div>);
+  if(!user)return <EntryScreen onEnter={(t,d)=>{setUser({team:t});setDay(d);setTab(0);}}/>;
 
-  const tc          = teamColor(user.team);
-  const tabs        = day === 1 ? TABS_D1 : TABS_D2;
-  const activeTeams = [...new Set(reqs.map(r => r.team))].length;
-  const totalVotes  = Object.values(upvotes).reduce((s,v) => s + Object.values(v||{}).filter(Boolean).length, 0);
+  const tc=teamColor(user.team);
+  const tabs=day===1?TABS_D1:TABS_D2;
 
-  return (
+  return(
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50">
       <div className="bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shadow-lg">
-        <div>
-          <h1 className="text-xl font-bold">⚡ Offsite Hub</h1>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900"}`}>Day {day}</span>
-            <p className="text-indigo-300 text-xs">{day===1?"Roleplay + Capture":"Synthesis + Engineering"}</p>
-          </div>
+        <div><h1 className="text-xl font-bold">⚡ Offsite Hub</h1>
+          <div className="flex items-center gap-2 mt-0.5"><span className={`text-xs px-2 py-0.5 rounded-full font-bold ${day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900"}`}>Day {day}</span><p className="text-indigo-300 text-xs">{day===1?"Roleplay + Capture":"Synthesis + Engineering"}</p></div>
         </div>
-        <div className="text-right">
-          <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${tc.bg} text-white`}>{user.team}</span>
-          <p className="text-indigo-300 text-xs mt-1 cursor-pointer hover:text-white" onClick={() => setUser(null)}>Switch</p>
-        </div>
+        <div className="text-right"><span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${tc.bg} text-white`}>{user.team}</span><p className="text-indigo-300 text-xs mt-1 cursor-pointer hover:text-white" onClick={()=>setUser(null)}>Switch</p></div>
       </div>
       <div className="bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center">
         <span>📌 <strong className="text-gray-800">{reqs.length}</strong> requirements</span>
-        <span>🗳️ <strong className="text-gray-800">{totalVotes}</strong> upvotes</span>
-        <span>🏷️ <strong className="text-gray-800">{activeTeams}</strong> teams</span>
-        {day===2 && <span>⚙️ <strong className="text-gray-800">{epics.length}</strong> epics</span>}
-        <span className="flex items-center gap-1.5"><SyncBadge status={syncStatus} />{syncStatus==="idle" && lastRefresh && <span className="text-gray-300">Synced {lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}</span>
-        <button onClick={() => setDay(d => d===1?2:1)} className="ml-auto text-indigo-500 hover:underline">Switch to Day {day===1?2:1} →</button>
+        <span>🏷️ <strong className="text-gray-800">{[...new Set(reqs.map(r=>r.team))].length}</strong> teams</span>
+        {votingClosed&&<span className="text-rose-600 font-bold">🏁 Voting closed</span>}
+        <span className="flex items-center gap-1.5"><SyncBadge status={syncStatus}/>{syncStatus==="idle"&&lastRefresh&&<span className="text-gray-300">Synced {lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}</span>
+        <button onClick={()=>setDay(d=>d===1?2:1)} className="ml-auto text-indigo-500 hover:underline">Switch to Day {day===1?2:1} →</button>
       </div>
-      <div className="flex border-b bg-white px-4">
-        {tabs.map((t,i) => <button key={i} onClick={() => setTab(i)} className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{t}</button>)}
+      <div className="flex border-b bg-white px-4 overflow-x-auto">
+        {tabs.map((t,i)=><button key={i} onClick={()=>setTab(i)} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{t}</button>)}
       </div>
       <div className="max-w-3xl mx-auto p-5">
-        {day===1 && tab===0 && <SubmitTab user={user} onSave={addReq} syncStatus={syncStatus} />}
-        {day===1 && tab===1 && <OpportunitiesTab reqs={reqs} upvotes={upvotes} scores={scores} user={user} onUpvote={toggleUpvote} onScore={setScore} />}
-        {day===1 && tab===2 && <RankingTab reqs={reqs} upvotes={upvotes} scores={scores} />}
-        {day===2 && tab===0 && <ReadOutTab reqs={reqs} upvotes={upvotes} scores={scores} />}
-        {day===2 && tab===1 && <SynthesisTab reqs={reqs} upvotes={upvotes} scores={scores} onUpdateReq={updateReq} />}
-        {day===2 && tab===2 && <EngineeringTab reqs={reqs} epics={epics} onSaveEpic={saveEpic} />}
-        {day===2 && tab===3 && <JiraTab reqs={reqs} />}
+        {day===1&&tab===0&&<SubmitTab user={user} onSave={addReq} syncStatus={syncStatus}/>}
+        {day===1&&tab===1&&<RequirementsTab reqs={reqs} user={user} onUpdate={updateReq} onDelete={deleteReq}/>}
+        {day===2&&tab===0&&<ReadOutTab reqs={reqs}/>}
+        {day===2&&tab===1&&<SynthesisTab reqs={reqs} onUpdateReq={updateReq}/>}
+        {day===2&&tab===2&&<VotingTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting}/>}
+        {day===2&&tab===3&&<EngineeringTab reqs={reqs}/>}
       </div>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
