@@ -569,7 +569,7 @@ function SynthesisTab({reqs,onUpdateReq}){
 }
 
 // ── Voting tab ───────────────────────────────────────────────
-function VotingTab({reqs,votes,votingClosed,user,onVote,onCloseVoting}){
+function VotingTab({reqs,votes,votingClosed,user,onVote,onCloseVoting,onResetVoting}){
   const vid=user.team.toLowerCase().replace(/\s+/g,"-");
   const myVotes=votes[vid]||{};
   const myVotesList=Object.entries(myVotes).map(([id,pts])=>({id,pts})).sort((a,b)=>b.pts-a.pts);
@@ -628,35 +628,122 @@ function VotingTab({reqs,votes,votingClosed,user,onVote,onCloseVoting}){
         <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-700">Close voting</p><span className="text-xs text-gray-400">{votersWhoVoted.length}/{TEAMS.length} teams voted</span></div>
         {TEAMS.map(t=>{const v=t.toLowerCase().replace(/\s+/g,"-");const voted=Object.keys(votes[v]||{}).length>0;return <div key={t} className="flex items-center gap-2 text-xs"><div className={`w-2 h-2 rounded-full ${voted?"bg-emerald-500":"bg-gray-300"}`}/><span className={voted?"text-gray-700 font-semibold":"text-gray-400"}>{t}</span>{voted&&<span className="text-emerald-500">✓ voted</span>}</div>;})}
         <button onClick={onCloseVoting} className="w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700">🏁 Close voting & show results</button>
+        <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50 hover:text-gray-600">🔄 Reset voting (clears all votes)</button>
       </div>
     </div>
   );
 }
 
 // ── Engineering tab ──────────────────────────────────────────
+const AIRPOST_CONTEXT = `## Airpost Platform — Current Flow
+
+**Auth Service:** When a new client onboards, the company is first set up in Auth Service with basic brand info needed for ad creation.
+
+**Airpost (Brief Page):** The client can view, edit, or delete their brand information. They can also view uploaded assets or upload new ones (footage used to create ads). The creative team can also use Non-Client-Specific content when needed.
+
+**Airpost (Ads Gallery):** Lists all generated ads. Users can open, preview, and edit via the Quick Editor — modifying copies, clips, and disclaimers.
+
+**Dojo:** Where scripts are created, reviewed, and modified (supports Taxonomy 1 and Taxonomy 2). Once a script is ready, assets can be selected and an ad generated from that script. The Dojo was built to capture learnings — the goal is to productize everything into Ad Studio.
+
+**Ad Studio:** Opens ads generated from Dojo. Allows adding supers, modifying VO, previewing, and other editing. This is where the full creation-to-editing flow should ultimately live.
+
+**QC Gallery (HAMMR):** Ads are approved and sent to the Library (SCF/Pathways).
+
+**SCF/Pathways Library:** Receives approved ads from QC and auto-imports them into Airpost. Also stores all assets.
+
+**Key tension:** Dojo was a learning project. The vision is to consolidate everything (script creation → ad generation → editing) inside Ad Studio / Airpost, eliminating the Dojo as a separate tool.`;
+
+const BEST_PRACTICES = {
+  epics: [
+    { icon:"🎯", title:"One clear outcome", desc:"Each epic solves ONE problem. If you need 'and', split it." },
+    { icon:"📏", title:"Shippable in a sprint", desc:"If it takes more than 2 weeks, break it down further." },
+    { icon:"❓", title:"Include open questions", desc:"List what needs to be decided before engineering starts." },
+    { icon:"📊", title:"Measurable success", desc:"Define how you'll know it's done — metrics or observable behavior." },
+    { icon:"🚫", title:"No implementation details", desc:"Describe the WHAT and WHY, not the HOW." },
+  ],
+  tickets: [
+    { icon:"👤", title:"Real role, real goal", desc:"'As a PM' + specific goal + clear benefit. Avoid generic roles." },
+    { icon:"✅", title:"Given/When/Then ACs", desc:"Each AC is testable. If you can't write a test for it, rewrite it." },
+    { icon:"🔢", title:"3-5 ACs max", desc:"More than 5 means the ticket is too big. Split it." },
+    { icon:"❓", title:"Surface ambiguity", desc:"Add a 'Questions' field if something is unclear before dev starts." },
+    { icon:"⚡", title:"Independent & deployable", desc:"Each ticket should be mergeable without blocking others." },
+  ],
+};
+
 function EngineeringTab({reqs}){
-  const [step,setStep]=useState("select"); // select | review | pushing | done
+  const [step,setStep]=useState("select");
   const [selectedIds,setSelected]=useState([]);
+  const [additionalContext,setAdditionalContext]=useState("");
   const [jsonInput,setJsonInput]=useState("");
   const [jsonError,setJsonError]=useState("");
   const [epics,setEpics]=useState([]);
   const [pushResult,setPushResult]=useState(null);
   const [copied,setCopied]=useState(false);
+  const [practiceTab,setPracticeTab]=useState("epics");
+
   const clusterOf=r=>r.cluster&&r.cluster!=="Unclustered"?r.cluster:"Unclustered";
   const byCluster=reqs.reduce((acc,r)=>{const c=clusterOf(r);if(!acc[c])acc[c]=[];acc[c].push(r);return acc;},{});
   const toggleReq=id=>setSelected(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   const toggleAll=()=>setSelected(selectedIds.length===reqs.length?[]:reqs.map(r=>r.id));
   const selectedReqs=reqs.filter(r=>selectedIds.includes(r.id));
+
   const buildPrompt=()=>{
-    const reqSummary=selectedReqs.map(r=>`- ID: ${r.id}\n  Type: ${r.issueType||"n/a"}\n  Cluster: ${clusterOf(r)}\n  Problem: ${r.problem}\n  Definition of solved: ${r.definition||"n/a"}\n  Agent potential: ${r.agentPotential||"n/a"}\n  Workaround: ${r.workaround||"n/a"}\n  Affected: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).filter(Boolean).join(", ")||"unknown"}`).join("\n");
-    return `You are a senior PM at Airpost, an AI-powered ad production platform.\n\nGroup the following requirements into Jira epics. Multiple requirements can belong to the same epic if they are related. Be smart about grouping.\n\nRequirements:\n${reqSummary}\n\nRespond ONLY with a valid JSON array. No explanation, no markdown, just raw JSON:\n[\n  {\n    "title": "Epic title",\n    "description": "Clear description",\n    "bucket": "Must-fix" | "Scale enabler" | "Strategic bet",\n    "reqIds": [array of requirement IDs],\n    "tickets": [\n      {\n        "title": "Ticket title",\n        "role": "who benefits",\n        "goal": "what they want to achieve",\n        "acs": ["Given... When... Then...", "Given... When... Then...", "Given... When... Then..."]\n      }\n    ]\n  }\n]`;
+    const reqSummary=selectedReqs.map(r=>`---\nID: ${r.id}\nType: ${r.issueType||"n/a"}\nCluster: ${clusterOf(r)}\nProblem: ${r.problem}\nContext/Evidence: ${r.roleplayExample||"n/a"}\nDefinition of solved: ${r.definition||"n/a"}\nAgent potential: ${r.agentPotential||"n/a"}\nWorkaround today: ${r.workaround||"n/a"}\nAffected roles: ${(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders||""]).filter(Boolean).join(", ")||"unknown"}\nConsequences: ${(Array.isArray(r.consequences)?r.consequences:[r.consequences||""]).filter(Boolean).join(", ")||"n/a"}\nScore: ${(r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0)}/20`).join("\n");
+    return `You are a senior PM at Airpost, an AI-powered ad production platform. Your job is to convert the requirements below into concrete, non-redundant Jira epics with child tickets.
+
+## Platform Context
+${AIRPOST_CONTEXT}
+
+## Additional Context from the Team
+${additionalContext.trim()||"(none provided)"}
+
+## Requirements to Convert
+${reqSummary}
+
+## Instructions
+- Group related requirements into epics intelligently. One epic can cover multiple requirements.
+- Each epic must have: a sharp title, a clear description of the problem and expected outcome, open questions that must be resolved before engineering starts, and a bucket classification.
+- Each ticket must be independent, non-redundant, and deployable on its own.
+- Write acceptance criteria in Given/When/Then format. Each AC must be testable.
+- If a requirement mentions AI automation potential, include an AC that validates the automated behavior.
+- Surface ambiguity explicitly — add a "questions" array per ticket if something is unclear.
+- Be concrete. Avoid generic language. Reference specific platform components (Dojo, Ad Studio, Airpost Brief, QC Gallery, SCF, Auth Service) when relevant.
+- Max 4 tickets per epic. Max 4 ACs per ticket.
+
+## Output Format
+Respond ONLY with a valid JSON array. No explanation, no markdown, just raw JSON:
+[
+  {
+    "title": "Epic title — sharp and specific",
+    "description": "What problem this solves and what the expected outcome is",
+    "bucket": "Must-fix" | "Scale enabler" | "Strategic bet",
+    "openQuestions": ["Question 1 that must be resolved before dev starts", "Question 2"],
+    "reqIds": [array of requirement IDs covered],
+    "tickets": [
+      {
+        "title": "Specific ticket title",
+        "role": "specific role (e.g. Editor, PM, Client, Creative Strategist)",
+        "goal": "specific goal they want to achieve",
+        "benefit": "so that [specific outcome]",
+        "questions": ["Any ambiguity that needs clarification"],
+        "acs": [
+          "Given [context] When [action] Then [result]",
+          "Given [context] When [action] Then [result]",
+          "Given [context] When [action] Then [result]"
+        ]
+      }
+    ]
+  }
+]`;
   };
+
   const copyAndOpen=async()=>{
     try{await navigator.clipboard.writeText(buildPrompt());}catch{}
     setCopied(true);setTimeout(()=>setCopied(false),4000);
     window.open("https://claude.ai","_blank");
     setStep("paste");
   };
+
   const parseJson=()=>{
     setJsonError("");
     try{
@@ -664,12 +751,14 @@ function EngineeringTab({reqs}){
       if(!Array.isArray(parsed))throw new Error("Expected a JSON array");
       setEpics(parsed.map((e,i)=>({...e,id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(id=>typeof id==="string"?id:String(id))})));
       setStep("review");
-    }catch(err){setJsonError("Invalid JSON — paste exactly what Claude gave you: "+err.message);}
+    }catch(err){setJsonError("Invalid JSON: "+err.message);}
   };
+
   const updateEpic=(idx,patch)=>setEpics(p=>p.map((e,i)=>i===idx?{...e,...patch}:e));
   const updateTicket=(eIdx,tIdx,patch)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.map((t,j)=>j===tIdx?{...t,...patch}:t)}:e));
   const removeTicket=(eIdx,tIdx)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.filter((_,j)=>j!==tIdx)}:e));
   const approvedEpics=epics.filter(e=>e.approved);
+
   const pushToJira=async()=>{
     if(!approvedEpics.length)return;
     setStep("pushing");
@@ -677,90 +766,178 @@ function EngineeringTab({reqs}){
     setPushResult(result);
     setStep("done");
   };
-  if(step==="done")return(
+
+  // ── Best practices panel ──
+  const BestPracticesPanel=()=>(
+    <div className="bg-white rounded-xl border shadow-sm overflow-hidden sticky top-4">
+      <div className="bg-slate-800 px-4 py-3"><p className="text-sm font-black text-white">📖 Best Practices</p><p className="text-xs text-slate-400 mt-0.5">Keep these in mind when reviewing</p></div>
+      <div className="flex border-b">
+        <button onClick={()=>setPracticeTab("epics")} className={`flex-1 py-2 text-xs font-bold transition-colors ${practiceTab==="epics"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400 hover:text-gray-600"}`}>Epics</button>
+        <button onClick={()=>setPracticeTab("tickets")} className={`flex-1 py-2 text-xs font-bold transition-colors ${practiceTab==="tickets"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400 hover:text-gray-600"}`}>Tickets</button>
+      </div>
+      <div className="p-3 space-y-3">
+        {BEST_PRACTICES[practiceTab].map((p,i)=>(
+          <div key={i} className="flex gap-2.5 items-start">
+            <span className="text-base flex-shrink-0">{p.icon}</span>
+            <div><p className="text-xs font-bold text-gray-800">{p.title}</p><p className="text-xs text-gray-500 leading-relaxed mt-0.5">{p.desc}</p></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  if(step==="done") return(
     <div className="space-y-4">
       {pushResult?.ok
-        ?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys?.join(", ")}</strong></p><p className="text-xs text-emerald-500">Sprint "{pushResult.sprint||"Airpost Offsite 2026"}" created.</p></div>
+        ?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys?.join(", ")}</strong></p><p className="text-xs text-emerald-500">Sprint "Airpost Offsite 2026" created.</p></div>
         :<div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">⚠️</p><p className="text-xl font-black text-rose-700">Something went wrong</p><p className="text-xs text-rose-500 font-mono">{pushResult?.error||"Unknown error"}</p></div>
       }
       <button onClick={()=>{setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);}} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
     </div>
   );
-  if(step==="pushing")return(<div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400"><div className="text-6xl animate-bounce">🚀</div><p className="text-sm font-bold text-gray-600">Pushing to Jira…</p><p className="text-xs">Creating epics, subtasks and sprint</p></div>);
-  if(step==="review")return(
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Review & Approve Epics</p><p className="text-xs text-gray-400">Edit epics and tickets, approve what goes to Jira.</p></div><button onClick={()=>setStep("paste")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
-      {epics.map((epic,eIdx)=>{
-        const epicReqs=selectedReqs.filter(r=>(epic.reqIds||[]).includes(String(r.id))||(epic.reqIds||[]).includes(r.id));
-        return(
-          <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved?"border-emerald-400":"border-gray-200"}`}>
-            <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved?"bg-emerald-50":"bg-gray-50"}`}>
-              <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>{epic.bucket&&<span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}<span className="text-xs text-gray-400">{epicReqs.length} reqs · {epic.tickets?.length||0} tickets</span></div>
-              <button onClick={()=>updateEpic(eIdx,{approved:!epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved?"bg-emerald-500 border-emerald-500 text-white":"border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>{epic.approved?"✓ Approved":"Approve"}</button>
-            </div>
-            <div className="p-4 space-y-3">
-              <div><label className="text-xs font-bold text-gray-500 block mb-1">Title</label><input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title} onChange={e=>updateEpic(eIdx,{title:e.target.value})}/></div>
-              <div><label className="text-xs font-bold text-gray-500 block mb-1">Description</label><textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e=>updateEpic(eIdx,{description:e.target.value})}/></div>
-              {epicReqs.length>0&&<div className="space-y-1"><p className="text-xs font-bold text-gray-400">Linked requirements</p>{epicReqs.map(r=><div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}</div>}
-              {epic.tickets?.length>0&&(
-                <div className="space-y-2 pt-1 border-t">
-                  <p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
-                  {epic.tickets.map((t,tIdx)=>(
-                    <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                      <div className="flex gap-2 items-center"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e=>updateTicket(eIdx,tIdx,{title:e.target.value})}/><button onClick={()=>removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0 leading-none">×</button></div>
-                      {t.role&&t.goal&&<p className="text-xs text-gray-400 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}</p>}
-                      <div className="space-y-1">{(t.acs||[]).map((ac,ai)=><div key={ai} className="flex gap-2 items-start"><span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span><input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e=>{const acs=[...t.acs];acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs});}}/></div>)}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <div className="sticky bottom-4 pt-2">
-        <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira</button>
-        {!approvedEpics.length&&<p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
-      </div>
+
+  if(step==="pushing") return(
+    <div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400">
+      <div className="text-6xl animate-bounce">🚀</div><p className="text-sm font-bold text-gray-600">Pushing to Jira…</p><p className="text-xs">Creating epics, subtasks and sprint</p>
     </div>
   );
-  if(step==="paste")return(
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Step 2 — Paste Claude's response</p><p className="text-xs text-gray-400">Copy the JSON array Claude gave you and paste it below.</p></div><button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
-      <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-2">
-        <p className="text-xs font-bold text-indigo-700">In Claude.ai:</p>
-        <ol className="text-xs text-indigo-600 space-y-1 list-decimal list-inside"><li>Paste the prompt (Ctrl+V / Cmd+V)</li><li>Wait for Claude to respond</li><li>Copy the entire JSON array</li><li>Come back here and paste it below</li></ol>
-        <a href="https://claude.ai" target="_blank" className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">Open Claude.ai ↗</a>
-      </div>
-      <div><label className="text-xs font-bold text-gray-500 block mb-2">Paste JSON here</label>
-        <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400 bg-rose-50":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  {\n    "title": "...",\n    ...\n  }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
-        {jsonError&&<p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
-      </div>
-      <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">Parse & Review Epics →</button>
-    </div>
-  );
-  return(
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl border p-4 space-y-1"><p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p><p className="text-xs text-gray-500">Pick requirements to turn into Jira epics. We'll build a prompt for Claude to group them.</p></div>
-      {reqs.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:<>
-        <div className="bg-white rounded-xl border p-3 flex items-center justify-between"><button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===reqs.length?"Deselect all":"Select all"}</button><span className="text-xs text-gray-400">{selectedIds.length} of {reqs.length} selected</span></div>
-        {Object.entries(byCluster).map(([cluster,clReqs])=>(
-          <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-            <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between"><span className="text-xs font-bold text-white">🗂️ {cluster}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span></div>
-            <div className="divide-y">{clReqs.map(r=>{const tc=teamColor(r.team);const sel=selectedIds.includes(r.id);return(
-              <div key={r.id} onClick={()=>toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel?"bg-indigo-50":"hover:bg-gray-50"}`}>
-                <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${sel?"bg-indigo-600 border-indigo-600":"border-gray-300"}`}>{sel&&<span className="text-white text-xs">✓</span>}</div>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p>
-                  <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}</div>
-                  {r.definition&&<p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
-                </div>
+
+  if(step==="review") return(
+    <div className="flex gap-4 items-start">
+      {/* Main content */}
+      <div className="flex-1 min-w-0 space-y-4">
+        <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
+          <div><p className="text-sm font-bold text-gray-800">Review & Approve Epics</p><p className="text-xs text-gray-400">Edit, approve, then push to Jira.</p></div>
+          <button onClick={()=>setStep("paste")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
+        </div>
+        {epics.map((epic,eIdx)=>{
+          const epicReqs=selectedReqs.filter(r=>(epic.reqIds||[]).includes(String(r.id))||(epic.reqIds||[]).includes(r.id));
+          return(
+            <div key={eIdx} className={`bg-white rounded-2xl border-2 shadow-sm overflow-hidden transition-all ${epic.approved?"border-emerald-400":"border-gray-200"}`}>
+              <div className={`px-4 py-3 flex items-center justify-between gap-3 ${epic.approved?"bg-emerald-50":"bg-gray-50"}`}>
+                <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>{epic.bucket&&<span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(epic.bucket)}`}>{epic.bucket}</span>}<span className="text-xs text-gray-400">{epicReqs.length} reqs · {epic.tickets?.length||0} tickets</span></div>
+                <button onClick={()=>updateEpic(eIdx,{approved:!epic.approved})} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all ${epic.approved?"bg-emerald-500 border-emerald-500 text-white":"border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600"}`}>{epic.approved?"✓ Approved":"Approve"}</button>
               </div>
-            );})}</div>
+              <div className="p-4 space-y-3">
+                <div><label className="text-xs font-bold text-gray-500 block mb-1">Title</label><input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title} onChange={e=>updateEpic(eIdx,{title:e.target.value})}/></div>
+                <div><label className="text-xs font-bold text-gray-500 block mb-1">Description</label><textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description} onChange={e=>updateEpic(eIdx,{description:e.target.value})}/></div>
+                {epic.openQuestions?.length>0&&(
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
+                    <p className="text-xs font-bold text-amber-700">❓ Open questions before dev starts</p>
+                    {epic.openQuestions.map((q,qi)=><p key={qi} className="text-xs text-amber-800 flex gap-1.5"><span className="flex-shrink-0">·</span>{q}</p>)}
+                  </div>
+                )}
+                {epicReqs.length>0&&<div className="space-y-1"><p className="text-xs font-bold text-gray-400">Linked requirements</p>{epicReqs.map(r=><div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}</div>}
+                {epic.tickets?.length>0&&(
+                  <div className="space-y-2 pt-1 border-t">
+                    <p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
+                    {epic.tickets.map((t,tIdx)=>(
+                      <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
+                        <div className="flex gap-2 items-center"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title} onChange={e=>updateTicket(eIdx,tIdx,{title:e.target.value})}/><button onClick={()=>removeTicket(eIdx,tIdx)} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0 leading-none">×</button></div>
+                        {t.role&&t.goal&&<p className="text-xs text-gray-500 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}{t.benefit?" "+t.benefit:""}</p>}
+                        {t.questions?.length>0&&<div className="bg-yellow-50 rounded-lg px-2 py-1.5 space-y-0.5">{t.questions.map((q,qi)=><p key={qi} className="text-xs text-yellow-700 flex gap-1"><span>❓</span>{q}</p>)}</div>}
+                        <div className="space-y-1">{(t.acs||[]).map((ac,ai)=><div key={ai} className="flex gap-2 items-start"><span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span><input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac} onChange={e=>{const acs=[...t.acs];acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs});}}/></div>)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        <div className="sticky bottom-4 pt-2">
+          <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira</button>
+          {!approvedEpics.length&&<p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
+        </div>
+      </div>
+      {/* Best practices sidebar */}
+      <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
+    </div>
+  );
+
+  if(step==="paste") return(
+    <div className="flex gap-4 items-start">
+      <div className="flex-1 min-w-0 space-y-4">
+        <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Step 2 — Paste Claude's response</p><p className="text-xs text-gray-400">Copy the JSON array Claude gave you and paste it below.</p></div><button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-2">
+          <p className="text-xs font-bold text-indigo-700">In Claude.ai:</p>
+          <ol className="text-xs text-indigo-600 space-y-1 list-decimal list-inside"><li>Paste the prompt (Ctrl+V / Cmd+V)</li><li>Wait for Claude to respond</li><li>Copy the entire JSON array</li><li>Come back here and paste it below</li></ol>
+          <a href="https://claude.ai" target="_blank" className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">Open Claude.ai ↗</a>
+        </div>
+        <div><label className="text-xs font-bold text-gray-500 block mb-2">Paste JSON here</label>
+          <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400 bg-rose-50":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  {\n    "title": "...",\n    ...\n  }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
+          {jsonError&&<p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
+        </div>
+        <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">Review Epics →</button>
+      </div>
+      <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
+    </div>
+  );
+
+  // ── Step 1: Select requirements ──
+  return(
+    <div className="flex gap-4 items-start">
+      <div className="flex-1 min-w-0 space-y-4">
+        <div className="bg-white rounded-xl border p-4 space-y-1"><p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p><p className="text-xs text-gray-500">Pick requirements, add context, then generate the prompt for Claude.</p></div>
+
+        {/* Additional context field */}
+        <div className="bg-white rounded-xl border p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-bold text-gray-800">Additional context</label>
+            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">optional but recommended</span>
           </div>
-        ))}
-        <div className="sticky bottom-4 pt-2"><button onClick={copyAndOpen} disabled={!selectedIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">{copied?"✅ Prompt copied! Claude.ai is opening…":"📋 Copy prompt & open Claude.ai"}</button></div>
-      </>}
+          {/* Context prompts */}
+          <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 space-y-2">
+            <p className="text-xs font-bold text-indigo-700">💡 Consider answering these before generating:</p>
+            <div className="space-y-1.5">
+              {[
+                {q:"🏗️ Architecture decisions", hint:"Were any platform consolidations or migrations decided today? (e.g. Dojo → Ad Studio, deprecations)"},
+                {q:"🚫 Out of scope", hint:"What are we explicitly NOT building in this sprint?"},
+                {q:"⚡ Quick wins first", hint:"Are there any requirements that should become hotfixes or fast-follow tickets?"},
+                {q:"🔗 Dependencies", hint:"Are there requirements that must be done before others? Any cross-team blockers?"},
+                {q:"🤖 AI automation priority", hint:"Which steps are highest priority for full automation vs assisted AI?"},
+                {q:"👥 Who owns what", hint:"Are any epics pre-assigned to specific engineers or squads?"},
+              ].map((item,i)=>(
+                <div key={i} className="flex gap-2 items-start">
+                  <span className="text-xs font-bold text-indigo-600 flex-shrink-0 w-36">{item.q}</span>
+                  <span className="text-xs text-indigo-500 leading-relaxed">{item.hint}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <textarea className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300" rows={5} value={additionalContext} onChange={e=>setAdditionalContext(e.target.value)} placeholder="e.g. We decided Dojo will be sunset in Q3 — all new script flows go into Ad Studio. The Quick Editor copy changes are a hotfix for next week. Auth Service epic goes to Lu, Ad Studio to Gaston…"/>
+        </div>
+
+        {reqs.length===0
+          ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
+          :<>
+            <div className="bg-white rounded-xl border p-3 flex items-center justify-between"><button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===reqs.length?"Deselect all":"Select all"}</button><span className="text-xs text-gray-400">{selectedIds.length} of {reqs.length} selected</span></div>
+            {Object.entries(byCluster).map(([cluster,clReqs])=>(
+              <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between"><span className="text-xs font-bold text-white">🗂️ {cluster}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span></div>
+                <div className="divide-y">{clReqs.map(r=>{const tc=teamColor(r.team);const sel=selectedIds.includes(r.id);return(
+                  <div key={r.id} onClick={()=>toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel?"bg-indigo-50":"hover:bg-gray-50"}`}>
+                    <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${sel?"bg-indigo-600 border-indigo-600":"border-gray-300"}`}>{sel&&<span className="text-white text-xs">✓</span>}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p>
+                      <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}<span className="text-xs text-indigo-500 font-bold">{(r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0)}pts</span></div>
+                      {r.definition&&<p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
+                    </div>
+                  </div>
+                );})}</div>
+              </div>
+            ))}
+            <div className="sticky bottom-4 pt-2">
+              <button onClick={copyAndOpen} disabled={!selectedIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
+                {copied?"✅ Prompt copied! Claude.ai is opening…":`✨ Generate epics & tickets from ${selectedIds.length} requirement${selectedIds.length!==1?"s":""}`}
+              </button>
+              {selectedIds.length>0&&!copied&&<p className="text-center text-xs text-gray-400 mt-2">Opens Claude.ai with a pre-built prompt including platform context</p>}
+            </div>
+          </>
+        }
+      </div>
+      {/* Best practices sidebar */}
+      <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
     </div>
   );
 }
@@ -820,6 +997,19 @@ function App(){
     await gsUpsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});
   };
 
+  const resetVoting=async()=>{
+    if(!window.confirm("Reset all votes? This cannot be undone."))return;
+    setVotes({});
+    setVotingClosed(false);
+    // delete voting_closed flag and all vote rows
+    await gsDelete("scores_upvotes","__voting_closed__");
+    // re-upsert each team with empty votes
+    for(const t of TEAMS){
+      const vid=t.toLowerCase().replace(/\s+/g,"-");
+      await gsUpsert("scores_upvotes",{id:vid,scores:{},upvotes:{}});
+    }
+  };
+
   if(loading)return(<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}><div style={{fontSize:"2.5rem"}}>⚡</div><p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p></div>);
   if(!user)return <EntryScreen onEnter={(t,d)=>{setUser({team:t});setDay(d);setTab(0);}}/>;
 
@@ -850,7 +1040,7 @@ function App(){
         {day===1&&tab===1&&<RequirementsTab reqs={reqs} user={user} onUpdate={updateReq} onDelete={deleteReq}/>}
         {day===2&&tab===0&&<ReadOutTab reqs={reqs}/>}
         {day===2&&tab===1&&<SynthesisTab reqs={reqs} onUpdateReq={updateReq}/>}
-        {day===2&&tab===2&&<VotingTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting}/>}
+        {day===2&&tab===2&&<VotingTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting} onResetVoting={resetVoting}/>}
         {day===2&&tab===3&&<EngineeringTab reqs={reqs}/>}
       </div>
     </div>
