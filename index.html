@@ -485,7 +485,7 @@ function EngineeringTab({reqs}){
   const [genError,setGenError]=useState("");
   const [jsonInput,setJsonInput]=useState("");
   const [jsonError,setJsonError]=useState("");
-  const [pushResult,setPushResult]=useState(null);
+  const [pushedReqIds, setPushedReqIds] = useState([]);
 
   const clusterOf=r=>r.cluster&&r.cluster!=="Unclustered"?r.cluster:"Unclustered";
   const byCluster=reqs.reduce((acc,r)=>{const c=clusterOf(r);if(!acc[c])acc[c]=[];acc[c].push(r);return acc;},{});
@@ -520,10 +520,18 @@ function EngineeringTab({reqs}){
   const removeTicket=(eIdx,tIdx)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.filter((_,j)=>j!==tIdx)}:e));
   const approvedEpics=epics.filter(e=>e.approved);
 
+  const [pushResult, setPushResult] = useState(null);
+
   const pushToJira=async()=>{
     if(!approvedEpics.length)return;
     setStep("pushing");
-    setPushResult(await gs.jira(approvedEpics));
+    const result = await gs.jira(approvedEpics);
+    setPushResult(result);
+    if (result?.ok) {
+      // Mark all req IDs from approved epics as pushed
+      const ids = approvedEpics.flatMap(e => e.reqIds || []);
+      setPushedReqIds(prev => [...new Set([...prev, ...ids])]);
+    }
     setStep("done");
   };
 
@@ -614,7 +622,7 @@ function EngineeringTab({reqs}){
                 <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${sel?"bg-indigo-600 border-indigo-600":"border-gray-300"}`}>{sel&&<span className="text-white text-xs">✓</span>}</div>
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p>
-                  <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}{score>0&&<span className="text-xs text-indigo-500 font-bold">{score}pts</span>}</div>
+                  <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}{score>0&&<span className="text-xs text-indigo-500 font-bold">{score}pts</span>}{pushedReqIds.includes(String(r.id))&&<Badge cls="bg-emerald-100 text-emerald-700">✅ In Jira</Badge>}</div>
                   {r.definition&&<p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
                 </div>
               </div>
