@@ -701,7 +701,8 @@ function EngineeringTab({reqs}){
   const [jsonError,setJsonError]=useState("");
   const [epics,setEpics]=useState([]);
   const [pushResult,setPushResult]=useState(null);
-  const [copied,setCopied]=useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
   const [practiceTab,setPracticeTab]=useState("epics");
 
   const clusterOf=r=>r.cluster&&r.cluster!=="Unclustered"?r.cluster:"Unclustered";
@@ -881,34 +882,10 @@ Respond ONLY with a valid JSON array. No explanation, no markdown, just raw JSON
     <div className="flex gap-4 items-start">
       <div className="flex-1 min-w-0 space-y-4">
         <div className="bg-white rounded-xl border p-4 flex items-center justify-between">
-          <div><p className="text-sm font-bold text-gray-800">Step 2 — Generate in Claude.ai</p><p className="text-xs text-gray-400">The prompt is ready in your clipboard.</p></div>
+          <div><p className="text-sm font-bold text-gray-800">Paste manually (fallback)</p><p className="text-xs text-gray-400">Only use this if the automatic generation failed.</p></div>
           <button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
         </div>
-
-        {/* Step by step instructions */}
-        <div className="bg-indigo-600 rounded-2xl p-5 text-white space-y-4">
-          <p className="text-sm font-black">Follow these steps:</p>
-          <div className="space-y-3">
-            {[
-              { n:"1", icon:"🖱️", title:"Open Claude.ai", desc:"Click the button below to open Claude in a new tab." },
-              { n:"2", icon:"📋", title:"Paste the prompt", desc:"In Claude's chat box, press Cmd+V (Mac) or Ctrl+V (Windows) to paste. The prompt is already in your clipboard." },
-              { n:"3", icon:"⏳", title:"Wait for the response", desc:"Claude will generate a JSON array with epics and tickets. Wait until it finishes completely." },
-              { n:"4", icon:"📑", title:"Copy the JSON", desc:"Select all of Claude's response (it starts with [ and ends with ]) and copy it." },
-              { n:"5", icon:"↩️", title:"Come back & paste below", desc:"Return to this tab and paste the JSON in the field below." },
-            ].map(s=>(
-              <div key={s.n} className="flex gap-3 items-start">
-                <div className="w-6 h-6 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-xs font-black flex-shrink-0">{s.n}</div>
-                <div><p className="text-sm font-bold">{s.icon} {s.title}</p><p className="text-xs text-indigo-200 mt-0.5">{s.desc}</p></div>
-              </div>
-            ))}
-          </div>
-          <a href="https://claude.ai" target="_blank" className="flex items-center justify-center gap-2 w-full py-3 bg-white text-indigo-600 rounded-xl font-bold text-sm hover:bg-indigo-50 transition-colors">
-            Open Claude.ai in a new tab →
-          </a>
-        </div>
-
-        <div>
-          <label className="text-xs font-bold text-gray-500 block mb-2">Paste Claude's JSON response here</label>
+        <div><label className="text-xs font-bold text-gray-500 block mb-2">Paste Claude's JSON response here</label>
           <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400 bg-rose-50":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  {\n    "title": "...",\n    ...\n  }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
           {jsonError&&<p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
         </div>
@@ -971,11 +948,15 @@ Respond ONLY with a valid JSON array. No explanation, no markdown, just raw JSON
                 );})}</div>
               </div>
             ))}
-            <div className="sticky bottom-4 pt-2">
-              <button onClick={copyAndOpen} disabled={!selectedIds.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
-                {copied?"✅ Prompt copied! Claude.ai is opening…":`✨ Generate epics & tickets from ${selectedIds.length} requirement${selectedIds.length!==1?"s":""}`}
+            <div className="sticky bottom-4 pt-2 space-y-2">
+              {generateError && <p className="text-xs text-rose-600 bg-rose-50 rounded-xl px-4 py-2 text-center">{generateError} — <button onClick={()=>setStep("paste")} className="underline">paste manually instead</button></p>}
+              <button onClick={generateEpics} disabled={!selectedIds.length||generating} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
+                {generating
+                  ? <span className="flex items-center justify-center gap-2"><span className="animate-spin">⚙️</span> Generating epics & tickets… (this takes ~20s)</span>
+                  : `✨ Generate epics & tickets from ${selectedIds.length} requirement${selectedIds.length!==1?"s":""}`
+                }
               </button>
-              {selectedIds.length>0&&!copied&&<p className="text-center text-xs text-gray-400 mt-2">Opens Claude.ai with a pre-built prompt including platform context</p>}
+              {selectedIds.length>0&&!generating&&<p className="text-center text-xs text-gray-400">Powered by Claude via Apps Script — no copy-paste needed</p>}
             </div>
           </>
         }
