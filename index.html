@@ -71,12 +71,18 @@ const TABS_D2         = ["🎤 Read-Out","🗂️ Synthesis","🗳️ Voting","�
 
 const TEAM_MEMBERS = {
   "The Client":         ["Alejandro Martearena","Pablo Emir Rocha","John"],
-  "Editing 1":          ["José Castro Madero","Emi Prandi","Emi Fant","Jhony Bazan","Luciana Biglia"],
-  "Editing 2":          ["Lucas Chiacchio","Leo Spataro","Toote","Dara Roldán","Luciana Biglia"],
-  "Footage Production": ["Milton Rey Chapur","Nico Hulej","Tomás Ernesto Seoane","Nico Campos","Luciana Biglia"],
+  "Editing 1":          ["José Castro Madero","Emi Prandi","Emi Fant","Johnny Bazan","Caro Glatstein"],
+  "Editing 2":          ["Lucas Chiacchio","Leo Spataro","Toote","Gaston Silva","Dara Roldán"],
+  "Footage Production": ["Milton Rey Chapur","Nico Hulej","Tomás Ernesto Seoane","Nico Campos"],
   "PM":                 ["Lau Basanta","Vicky Magallanes","Mati Tasca","Luciana Biglia"],
-  "Creative Strategy":  ["Sofía Córdoba Salazar","María Abril Portillo","Andrés Matías Pardini","Ignacio Baldoncini","Gaston Silva","Caro Glatstein"],
+  "Creative Strategy":  ["Sofía Córdoba Salazar","María Abril Portillo","Andrés Matías Pardini","Ignacio Baldoncini","Marce Jaeggi"],
 };
+
+// Flat list of all members with their team
+const ALL_MEMBERS = Object.entries(TEAM_MEMBERS).flatMap(([team, members]) =>
+  members.map(name => ({ name, team }))
+);
+
 const TEAM_CONTEXT = {
   "The Client":         { role:"Mid-market brand", color:"bg-violet-600", emoji:"🏢", responsibilities:["Pre-research the brand","Get in Slack","Complete onboarding","Give footage & tweak brief","Provide brand info, product details, claims & constraints","Respond as a real client","Tweak ads & ask for manual revisions","Use the delivery sheet","Approve ads"], focus:["Missing inputs","Ambiguity","Manual workarounds","Defaults that force guessing","Onboarding friction"] },
   "Editing 1":          { role:"Asset production", color:"bg-emerald-600", emoji:"🎬", responsibilities:["Generate ads","Generate footage","Request clarifications","Iterate on cuts","Prepare final delivery"], focus:["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes","Rendering constraints"] },
@@ -192,24 +198,131 @@ function TeamContextPanel({team}){
 
 // ── Entry screen ─────────────────────────────────────────────
 function EntryScreen({onEnter}){
-  const [team,setTeam]=useState(null);const [day,setDay]=useState(null);
-  return(<div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
-    <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
-      <div className="text-center"><div className="text-5xl mb-2">⚡</div><h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1><p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p></div>
-      <div><label className="text-sm font-bold text-gray-700 block mb-3">Select your team</label>
-        <div className="grid grid-cols-2 gap-2">{TEAMS.map(t=>{const col=teamColor(t);return <button key={t} onClick={()=>setTeam(t)} className={`py-3 px-2 rounded-xl border-2 text-sm font-black transition-all ${team===t?col.light:"border-gray-200 text-gray-400 hover:border-gray-300"}`}>{t}</button>;})}</div>
-        {team&&<p className="text-center text-sm text-gray-500 mt-3"><span className={`px-3 py-1 rounded-full font-semibold ${teamColor(team).badge}`}>{team} ✓</span></p>}
+  const [query,setQuery]=useState("");
+  const [selected,setSelected]=useState(null); // { name, team }
+  const [day,setDay]=useState(null);
+  const [showDropdown,setShowDropdown]=useState(false);
+  const inputRef=useRef(null);
+
+  const filtered = query.trim().length >= 1
+    ? ALL_MEMBERS.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
+    : [];
+
+  const handleSelect = (member) => {
+    setSelected(member);
+    setQuery(member.name);
+    setShowDropdown(false);
+  };
+
+  const handleInput = (v) => {
+    setQuery(v);
+    setSelected(null);
+    setShowDropdown(true);
+  };
+
+  const tc = selected ? teamColor(selected.team) : null;
+  const canEnter = !!(selected && day);
+
+  return(
+    <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
+      <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <div className="text-5xl mb-2">⚡</div>
+          <h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1>
+          <p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p>
+        </div>
+
+        {/* Name search */}
+        <div className="space-y-2">
+          <label className="text-sm font-bold text-gray-700 block">Who are you?</label>
+          <div className="relative">
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={e=>handleInput(e.target.value)}
+              onFocus={()=>query.trim()&&setShowDropdown(true)}
+              placeholder="Search your name…"
+              className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 pr-10"
+              autoComplete="off"
+            />
+            {query && (
+              <button onClick={()=>{setQuery("");setSelected(null);setShowDropdown(false);inputRef.current?.focus();}}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg">×</button>
+            )}
+            {showDropdown && filtered.length > 0 && (
+              <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-56 overflow-y-auto">
+                {filtered.map((m,i)=>{
+                  const mtc=teamColor(m.team);
+                  return(
+                    <button key={i} onClick={()=>handleSelect(m)}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 text-left transition-colors border-b border-gray-50 last:border-0">
+                      <div className="flex-1">
+                        <p className="text-sm font-semibold text-gray-800">{m.name}</p>
+                        <p className="text-xs text-gray-400">{m.team}</p>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${mtc.badge}`}>{m.team}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {showDropdown && query.trim().length >= 1 && filtered.length === 0 && (
+              <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl px-4 py-3">
+                <p className="text-xs text-gray-400">No matches. Ask the facilitator to add you.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Selected confirmation */}
+          {selected && (
+            <div className={`rounded-xl border-2 px-4 py-3 flex items-center gap-3 ${tc.light}`}>
+              <div className="flex-1">
+                <p className="text-sm font-black">{selected.name}</p>
+                <p className="text-xs opacity-70">{selected.team} · {TEAM_CONTEXT[selected.team]?.role}</p>
+              </div>
+              <span className="text-lg">{TEAM_CONTEXT[selected.team]?.emoji}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Team members preview — shown when a team is identified */}
+        {selected && (
+          <div className="bg-gray-50 rounded-2xl p-4 space-y-2">
+            <p className="text-xs font-black text-gray-500 uppercase tracking-wide">Your team</p>
+            <div className="flex flex-wrap gap-1.5">
+              {TEAM_MEMBERS[selected.team].map((m,i)=>(
+                <span key={i} className={`text-xs px-2.5 py-1 rounded-full font-medium ${m===selected.name?`${tc.bg} text-white`:tc.badge}`}>{m}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Day picker */}
+        <div>
+          <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
+          <div className="grid grid-cols-2 gap-3">
+            {[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji})=>(
+              <button key={d} onClick={()=>setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day===d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300"}`}>
+                <div className="text-2xl mb-1">{emoji}</div>
+                <div className="font-bold">{label}</div>
+                <div className="text-xs opacity-70">{sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={()=>canEnter&&onEnter(selected.team,day,selected.name)}
+          disabled={!canEnter}
+          className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+          Enter the Hub →
+        </button>
+
+        {!selected && <p className="text-center text-xs text-gray-300">Search your name to get started</p>}
       </div>
-      <div><label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
-        <div className="grid grid-cols-2 gap-3">{[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji})=>(
-          <button key={d} onClick={()=>setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day===d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300"}`}>
-            <div className="text-2xl mb-1">{emoji}</div><div className="font-bold">{label}</div><div className="text-xs opacity-70">{sub}</div>
-          </button>
-        ))}</div>
-      </div>
-      <button onClick={()=>team&&day&&onEnter(team,day)} disabled={!team||!day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed">Enter the Hub →</button>
     </div>
-  </div>);
+  );
 }
 
 // ── Submit tab ───────────────────────────────────────────────
@@ -222,7 +335,7 @@ function SubmitTab({user,onSave,syncStatus}){
   const missing=[!form.problem?.trim()&&"problem",!form.roleplayExample?.trim()&&"context",!form.frequency&&"frequency",!form.definition?.trim()&&"definition of solved"].filter(Boolean);
   const submit=async()=>{
     if(!canSubmit)return;setSaving(true);
-    const req={...form,id:Date.now(),team:user.team,ts:new Date().toISOString(),cluster:"Unclustered",category:"",bucket:""};
+    const req={...form,id:Date.now(),team:user.team,submittedBy:user.name||"",ts:new Date().toISOString(),cluster:"Unclustered",category:"",bucket:""};
     try{const t=await gs.translate({problem:req.problem,roleplayExample:req.roleplayExample,workaround:req.workaround,definition:req.definition});await onSave({...req,...t});}catch{await onSave(req);}
     setSaving(false);setForm(EMPTY_REQ);setDone(true);setTimeout(()=>setDone(false),3500);
   };
@@ -294,7 +407,13 @@ function RequirementsTab({reqs,user,onUpdate,onDelete}){
         <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={()=>!isEditing&&setExpanded(expanded===r.id?null:r.id)}>
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-              <div className="flex flex-wrap gap-1.5 mt-2"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}</div>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <Badge cls={tc.badge}>{r.team}</Badge>
+                {r.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {r.submittedBy}</Badge>}
+                {r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}
+                {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
+                {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
+              </div>
             </div>
             {score>0&&<div className="text-center flex-shrink-0"><div className="text-xl font-black text-indigo-600">{score}</div><div className="text-xs text-gray-400">pts</div></div>}
           </div>
@@ -528,7 +647,6 @@ function EngineeringTab({reqs}){
     const result = await gs.jira(approvedEpics);
     setPushResult(result);
     if (result?.ok) {
-      // Mark all req IDs from approved epics as pushed
       const ids = approvedEpics.flatMap(e => e.reqIds || []);
       setPushedReqIds(prev => [...new Set([...prev, ...ids])]);
     }
@@ -591,11 +709,9 @@ function EngineeringTab({reqs}){
     <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
   </div>);
 
-  // ── Step 1: Select ──
   return(<div className="flex gap-4 items-start">
     <div className="flex-1 min-w-0 space-y-4">
       <div className="bg-white rounded-xl border p-4"><p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p><p className="text-xs text-gray-500 mt-0.5">Pick requirements, add context, then generate epics & tickets automatically.</p></div>
-
       <div className="bg-white rounded-xl border p-4 space-y-3">
         <div className="flex items-center gap-2"><label className="text-sm font-bold text-gray-800">Additional context</label><span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">optional but recommended</span></div>
         <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 space-y-2">
@@ -611,7 +727,6 @@ function EngineeringTab({reqs}){
         </div>
         <textarea className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300" rows={4} value={additionalContext} onChange={e=>setAdditionalContext(e.target.value)} placeholder="e.g. Dojo will be sunset in Q3 — all new script flows go into Ad Studio. Quick Editor copy changes are a hotfix for next week…"/>
       </div>
-
       {reqs.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:<>
         <div className="bg-white rounded-xl border p-3 flex items-center justify-between"><button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===reqs.length?"Deselect all":"Select all"}</button><span className="text-xs text-gray-400">{selectedIds.length} of {reqs.length} selected</span></div>
         {Object.entries(byCluster).map(([cluster,clReqs])=>(
@@ -674,7 +789,7 @@ function App(){
   };
 
   if(loading)return(<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}><div style={{fontSize:"2.5rem"}}>⚡</div><p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p></div>);
-  if(!user)return <EntryScreen onEnter={(t,d)=>{setUser({team:t});setDay(d);setTab(0);}}/>;
+  if(!user)return <EntryScreen onEnter={(t,d,name)=>{setUser({team:t,name});setDay(d);setTab(0);}}/>;
 
   const tc=teamColor(user.team);const tabs=day===1?TABS_D1:TABS_D2;
 
@@ -683,7 +798,11 @@ function App(){
       <div><h1 className="text-xl font-bold">⚡ Offsite Hub</h1>
         <div className="flex items-center gap-2 mt-0.5"><span className={`text-xs px-2 py-0.5 rounded-full font-bold ${day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900"}`}>Day {day}</span><p className="text-indigo-300 text-xs">{day===1?"Roleplay + Capture":"Synthesis + Engineering"}</p></div>
       </div>
-      <div className="text-right"><span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${tc.bg} text-white`}>{user.team}</span><p className="text-indigo-300 text-xs mt-1 cursor-pointer hover:text-white" onClick={()=>setUser(null)}>Switch</p></div>
+      <div className="text-right">
+        <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${tc.bg} text-white`}>{user.name||user.team}</span>
+        <p className="text-indigo-300 text-xs mt-0.5 opacity-70">{user.team}</p>
+        <p className="text-indigo-300 text-xs cursor-pointer hover:text-white" onClick={()=>setUser(null)}>Switch →</p>
+      </div>
     </div>
     <div className="bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center">
       <span>📌 <strong className="text-gray-800">{reqs.length}</strong> requirements</span>
