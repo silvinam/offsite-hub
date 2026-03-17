@@ -13,26 +13,21 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useCallback } = React;
 
-// ── Google Sheets API ────────────────────────────────────────
 const GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
 const gs = {
-  get: async (sheet) => { try { return await (await fetch(`${GS_URL}?sheet=${encodeURIComponent(sheet)}`)).json(); } catch { return []; } },
-  upsert: async (sheet, data) => { try { await fetch(`${GS_URL}?action=upsert&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify(data))}`); } catch {} },
-  del: async (sheet, id) => { try { await fetch(`${GS_URL}?action=delete&sheet=${encodeURIComponent(sheet)}&data=${encodeURIComponent(JSON.stringify({id}))}`); } catch {} },
+  get: async (s) => { try { return await (await fetch(`${GS_URL}?sheet=${encodeURIComponent(s)}`)).json(); } catch { return []; } },
+  upsert: async (s, d) => { try { await fetch(`${GS_URL}?action=upsert&sheet=${encodeURIComponent(s)}&data=${encodeURIComponent(JSON.stringify(d))}`); } catch {} },
+  del: async (s, id) => { try { await fetch(`${GS_URL}?action=delete&sheet=${encodeURIComponent(s)}&data=${encodeURIComponent(JSON.stringify({id}))}`); } catch {} },
   translate: async (fields) => {
     const entries = Object.entries(fields).filter(([,v]) => v && typeof v === "string" && v.trim());
     if (!entries.length) return fields;
-    try {
-      const res = await fetch(`${GS_URL}?action=translate&data=${encodeURIComponent(JSON.stringify(Object.fromEntries(entries)))}`);
-      return { ...fields, ...await res.json() };
-    } catch { return fields; }
+    try { const r = await fetch(`${GS_URL}?action=translate&data=${encodeURIComponent(JSON.stringify(Object.fromEntries(entries)))}`); return { ...fields, ...await r.json() }; } catch { return fields; }
   },
-  jira: async (epics) => { try { return await (await fetch(`${GS_URL}?action=jira&data=${encodeURIComponent(JSON.stringify(epics))}`)).json(); } catch(e) { return { ok: false, error: String(e) }; } },
+  jira: async (epics) => { try { return await (await fetch(`${GS_URL}?action=jira&data=${encodeURIComponent(JSON.stringify(epics))}`)).json(); } catch(e) { return { ok:false, error:String(e) }; } },
   generateEpics: async (requirements, additionalContext) => {
-    const payload = { requirements, additionalContext };
-    const res = await fetch(`${GS_URL}?action=generate_epics&data=${encodeURIComponent(JSON.stringify(payload))}`);
+    const res = await fetch(`${GS_URL}?action=generate_epics&data=${encodeURIComponent(JSON.stringify({ requirements, additionalContext }))}`);
     return await res.json();
   },
 };
@@ -55,19 +50,18 @@ const FREQUENCIES     = ["Always","Often","Sometimes","Rare but critical"];
 const FREQ_META       = { Always:{emoji:"🔴",desc:"Every project"}, Often:{emoji:"🟠",desc:"Most projects"}, Sometimes:{emoji:"🟡",desc:"Edge cases"}, "Rare but critical":{emoji:"⚪",desc:"Low freq, high impact"} };
 const AGENT_POTENTIALS= ["Assisted by AI","Fully automated","Orchestrated by an agent","Not suitable for AI"];
 const AGENT_META      = {
-  "Assisted by AI":          {emoji:"🤝",desc:"A human still makes the call, but AI drafts, suggests or pre-fills."},
-  "Fully automated":         {emoji:"⚡",desc:"No human needed. AI runs the step end-to-end every time."},
-  "Orchestrated by an agent":{emoji:"🕸️",desc:"An agent coordinates multiple tools or steps autonomously."},
-  "Not suitable for AI":     {emoji:"🚫",desc:"Requires human judgment, client relationship, or creative intuition."},
+  "Assisted by AI":          {emoji:"🤝",desc:"Human makes the call, AI drafts or suggests."},
+  "Fully automated":         {emoji:"⚡",desc:"No human needed. AI runs end-to-end."},
+  "Orchestrated by an agent":{emoji:"🕸️",desc:"Agent coordinates multiple steps autonomously."},
+  "Not suitable for AI":     {emoji:"🚫",desc:"Requires human judgment or creative intuition."},
 };
 const BASE_CLUSTERS   = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered","Other"];
 const BASE_CATEGORIES = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Other"];
 const CAT_META        = {"Workflow Optimization":{desc:"Incremental process improvement"},"Agent Enablement":{desc:"Requires data & structure redesign"},"Structural Re-Architecture":{desc:"Platform-level bet"}};
 const BUCKETS         = ["Must-fix","Scale enabler","Strategic bet"];
-const ISSUE_TYPES     = ["Bug","New Feature"];
 const TEAMS           = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
 const TABS_D1         = ["➕ Submit","📋 Requirements"];
-const TABS_D2         = ["🎤 Read-Out","🗂️ Synthesis","🗳️ Voting","⚙️ Engineering"];
+const TABS_D2         = ["🎤 Read-Out","🗳️ Synthesis & Vote","⚙️ Engineering"];
 
 const TEAM_MEMBERS = {
   "The Client":         ["Alejandro Martearena","Pablo Emir Rocha","John"],
@@ -77,11 +71,7 @@ const TEAM_MEMBERS = {
   "PM":                 ["Lau Basanta","Vicky Magallanes","Mati Tasca","Luciana Biglia"],
   "Creative Strategy":  ["Sofía Córdoba Salazar","María Abril Portillo","Andrés Matías Pardini","Ignacio Baldoncini","Marce Jaeggi"],
 };
-
-// Flat list of all members with their team
-const ALL_MEMBERS = Object.entries(TEAM_MEMBERS).flatMap(([team, members]) =>
-  members.map(name => ({ name, team }))
-);
+const ALL_MEMBERS = Object.entries(TEAM_MEMBERS).flatMap(([team, members]) => members.map(name => ({ name, team })));
 
 const TEAM_CONTEXT = {
   "The Client":         { role:"Mid-market brand", color:"bg-violet-600", emoji:"🏢", responsibilities:["Pre-research the brand","Get in Slack","Complete onboarding","Give footage & tweak brief","Provide brand info, product details, claims & constraints","Respond as a real client","Tweak ads & ask for manual revisions","Use the delivery sheet","Approve ads"], focus:["Missing inputs","Ambiguity","Manual workarounds","Defaults that force guessing","Onboarding friction"] },
@@ -92,7 +82,7 @@ const TEAM_CONTEXT = {
   "Creative Strategy":  { role:"Strategy + scripting", color:"bg-pink-600",emoji:"✍️", responsibilities:["Consolidate client info","Identify gaps","Define creative strategy","Generate scripts","QA output","Manage revisions"], focus:["Decision logic that lives 'in heads'","Manual repetitive reasoning","Script iteration patterns","Taxonomy gaps","What should be systemized vs flexible","AI leverage points"] },
 };
 const FIELD_TOOLTIPS = {
-  problem:       { title:"What broke, slowed down, or is missing?", what:"One sentence describing the symptom — a bug, a bottleneck, or a missing capability.", why:"This becomes the title of the requirement.", tips:["For bugs: describe what broke","For new features: describe the gap","Avoid 'we should' — describe the current reality"], bad:"The brief process is inefficient", good:"Editors don't know the required video format until after they've finished the cut." },
+  problem:       { title:"What broke, slowed down, or is missing?", what:"One sentence describing the symptom.", why:"This becomes the title of the requirement.", tips:["For bugs: describe what broke","For new features: describe the gap","Avoid 'we should' — describe the current reality"], bad:"The brief process is inefficient", good:"Editors don't know the required video format until after they've finished the cut." },
   roleplay:      { title:"Roleplay Evidence / Additional Context", what:"A concrete blow-by-blow of what happened.", why:"This is the evidence that makes the requirement real.", tips:["Name the roles involved","Include the exact sequence of events","End with the consequence"], bad:"There was confusion about the format", good:"PM sent Slack asking about aspect ratio. No response for 20 min. Editor assumed 9:16, finished cut. Client replied asking for 16:9 — 45 min rework." },
   frequency:     { title:"How Often Does This Happen?", what:"Honest estimate of frequency in real production.", why:"Frequency is one of the biggest drivers of prioritization.", tips:["Always = virtually every project","Often = more than half","Sometimes = occasional","Rare but critical = low freq, high severity"] },
   pipelineStage: { title:"Pipeline Stage", what:"Where in the production pipeline does this occur?", why:"Helps cluster requirements by theme.", tips:["Pick the stage where the problem first surfaces","Cross-stage = spans multiple stages"] },
@@ -111,14 +101,14 @@ const TEAM_COLORS = [
   {bg:"bg-pink-500",    light:"bg-pink-50 border-pink-400 text-pink-700",         badge:"bg-pink-100 text-pink-800"},
 ];
 const BEST_PRACTICES = {
-  epics: [
+  epics:[
     {icon:"🎯",title:"One clear outcome",desc:"Each epic solves ONE problem. If you need 'and', split it."},
     {icon:"📏",title:"Shippable in a sprint",desc:"If it takes more than 2 weeks, break it down further."},
     {icon:"❓",title:"Include open questions",desc:"List what needs to be decided before engineering starts."},
     {icon:"📊",title:"Measurable success",desc:"Define how you'll know it's done — metrics or observable behavior."},
     {icon:"🚫",title:"No implementation details",desc:"Describe the WHAT and WHY, not the HOW."},
   ],
-  tickets: [
+  tickets:[
     {icon:"👤",title:"Real role, real goal",desc:"'As a PM' + specific goal + clear benefit. Avoid generic roles."},
     {icon:"✅",title:"Given/When/Then ACs",desc:"Each AC is testable. If you can't write a test for it, rewrite it."},
     {icon:"🔢",title:"3-5 ACs max",desc:"More than 5 means the ticket is too big. Split it."},
@@ -127,26 +117,33 @@ const BEST_PRACTICES = {
   ],
 };
 
-const EMPTY_REQ = {issueType:"New Feature",problem:"",roleplayExample:"",frequency:"",stakeholders:[],consequences:[],agentPotential:"",workaround:"",definition:"",pipelineStage:"",impactScore:0,frequencyScore:0,riskScore:0,leverageScore:0};
-const teamColor   = n => TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0];
-const agentBadge  = a => ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"}[a]||"bg-gray-100 text-gray-500");
-const buckBadge   = b => ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"}[b]||"bg-gray-100 text-gray-600");
-const catBadge    = c => ({"Workflow Optimization":"bg-green-100 text-green-800","Agent Enablement":"bg-purple-100 text-purple-800","Structural Re-Architecture":"bg-red-100 text-red-800"}[c]||"bg-gray-100 text-gray-600");
-const typeBadge   = t => t==="Bug"?"bg-rose-100 text-rose-700":"bg-blue-100 text-blue-700";
-const getScore    = r => (r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0);
-const autoBucket  = s => s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet";
+const EMPTY_REQ = {problem:"",roleplayExample:"",frequency:"",stakeholders:[],consequences:[],agentPotential:"",workaround:"",definition:"",pipelineStage:"",impactScore:0,frequencyScore:0,riskScore:0,leverageScore:0};
+const teamColor  = n => TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0];
+const agentBadge = a => ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"}[a]||"bg-gray-100 text-gray-500");
+const buckBadge  = b => ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"}[b]||"bg-gray-100 text-gray-600");
+const catBadge   = c => ({"Workflow Optimization":"bg-green-100 text-green-800","Agent Enablement":"bg-purple-100 text-purple-800","Structural Re-Architecture":"bg-red-100 text-red-800"}[c]||"bg-gray-100 text-gray-600");
+const getScore   = r => (r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0);
+const autoBucket = s => s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet";
+const top5ByTeam = (reqs, team) => [...reqs].filter(r=>r.team===team).sort((a,b)=>getScore(b)-getScore(a)).slice(0,5);
 
 // ── Primitives ───────────────────────────────────────────────
 function Badge({cls,children}){return <span className={`text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cls}`}>{children}</span>;}
 function Chip({label,active,onClick}){return <button onClick={onClick} className={`text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all ${active?"bg-indigo-600 text-white border-indigo-600":"bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}>{label}</button>;}
 function MultiChips({options,selected,onChange}){return <div className="flex flex-wrap gap-2">{options.map(o=><Chip key={o} label={o} active={selected.includes(o)} onClick={()=>onChange(selected.includes(o)?selected.filter(x=>x!==o):[...selected,o])}/>)}</div>;}
+function SyncBadge({status}){const map={syncing:"🔄 Syncing…",ok:"✅ Saved",error:"⚠️ Sync error"};if(!map[status])return null;return <span className={`text-xs font-semibold ${status==="syncing"?"text-indigo-500":status==="ok"?"text-emerald-600":"text-rose-600"}`}>{map[status]}</span>;}
+
 function ScorePicker({label,emoji,value,onChange,color,desc}){
   const cls={blue:"bg-blue-600 border-blue-600",orange:"bg-orange-500 border-orange-500",red:"bg-red-600 border-red-600",indigo:"bg-indigo-600 border-indigo-600"};
   return <div className="space-y-1"><p className="text-xs font-semibold text-gray-700">{emoji} {label}</p><div className="flex gap-1">{[1,2,3,4,5].map(n=><button key={n} onClick={()=>onChange(n)} className={`w-8 h-8 rounded-lg border text-xs font-bold transition-all ${value===n?`${cls[color]} text-white`:"border-gray-300 text-gray-400 hover:border-indigo-300"}`}>{n}</button>)}</div>{desc&&<p className="text-xs text-gray-400 leading-relaxed">{desc}</p>}</div>;
 }
-function Section({step,bgColor,emoji,label,sublabel,children}){return(<div className="rounded-2xl border shadow-sm overflow-hidden"><div className={`${bgColor} px-5 py-4 flex items-center gap-3`}><div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{step}</div><div><p className="text-base font-black text-white">{emoji} {label}</p>{sublabel&&<p className="text-xs text-white opacity-80 mt-0.5">{sublabel}</p>}</div></div><div className="bg-white p-5 space-y-5">{children}</div></div>);}
-function Field({label,required,tipKey,children}){return(<div className="space-y-2"><div className="flex items-center gap-2"><label className="text-sm font-bold text-gray-800">{label}{required&&<span className="text-red-400"> *</span>}</label>{tipKey&&FIELD_TOOLTIPS[tipKey]&&<Tooltip tip={FIELD_TOOLTIPS[tipKey]}/>}</div>{children}</div>);}
-function SyncBadge({status}){const map={syncing:"🔄 Syncing…",ok:"✅ Saved",error:"⚠️ Sync error"};if(!map[status])return null;return <span className={`text-xs font-semibold ${status==="syncing"?"text-indigo-500":status==="ok"?"text-emerald-600":"text-rose-600"}`}>{map[status]}</span>;}
+
+function Section({step,bgColor,emoji,label,sublabel,children}){
+  return(<div className="rounded-2xl border shadow-sm overflow-hidden"><div className={`${bgColor} px-5 py-4 flex items-center gap-3`}><div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{step}</div><div><p className="text-base font-black text-white">{emoji} {label}</p>{sublabel&&<p className="text-xs text-white opacity-80 mt-0.5">{sublabel}</p>}</div></div><div className="bg-white p-5 space-y-5">{children}</div></div>);
+}
+
+function Field({label,required,tipKey,children}){
+  return(<div className="space-y-2"><div className="flex items-center gap-2"><label className="text-sm font-bold text-gray-800">{label}{required&&<span className="text-red-400"> *</span>}</label>{tipKey&&FIELD_TOOLTIPS[tipKey]&&<Tooltip tip={FIELD_TOOLTIPS[tipKey]}/>}</div>{children}</div>);
+}
 
 function Tooltip({tip}){
   const [open,setOpen]=useState(false);const ref=useRef(null);
@@ -163,8 +160,8 @@ function Tooltip({tip}){
 }
 
 function OtherSelect({options,value,onChange,placeholder}){
-  const knownOptions = options.filter(o=>o!=="Other");
-  const isCustom = value && !knownOptions.includes(value) && value!=="Other" && value!=="";
+  const knownOptions=options.filter(o=>o!=="Other");
+  const isCustom=value&&!knownOptions.includes(value)&&value!=="Other"&&value!=="";
   const [sel,setSel]=useState(isCustom?"Other":value||"");
   const [custom,setCustom]=useState(isCustom?value:"");
   const [showInput,setShowInput]=useState(isCustom);
@@ -196,136 +193,46 @@ function TeamContextPanel({team}){
   </div>);
 }
 
-// ── Entry screen ─────────────────────────────────────────────
+// ── Entry Screen ─────────────────────────────────────────────
 function EntryScreen({onEnter}){
   const [query,setQuery]=useState("");
-  const [selected,setSelected]=useState(null); // { name, team }
+  const [selected,setSelected]=useState(null);
   const [day,setDay]=useState(null);
   const [showDropdown,setShowDropdown]=useState(false);
   const inputRef=useRef(null);
-
-  const filtered = query.trim().length >= 1
-    ? ALL_MEMBERS.filter(m => m.name.toLowerCase().includes(query.toLowerCase()))
-    : [];
-
-  const handleSelect = (member) => {
-    setSelected(member);
-    setQuery(member.name);
-    setShowDropdown(false);
-  };
-
-  const handleInput = (v) => {
-    setQuery(v);
-    setSelected(null);
-    setShowDropdown(true);
-  };
-
-  const tc = selected ? teamColor(selected.team) : null;
-  const canEnter = !!(selected && day);
-
-  return(
-    <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
-      <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <div className="text-5xl mb-2">⚡</div>
-          <h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1>
-          <p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p>
+  const filtered=query.trim().length>=1?ALL_MEMBERS.filter(m=>m.name.toLowerCase().includes(query.toLowerCase())):[];
+  const handleSelect=m=>{setSelected(m);setQuery(m.name);setShowDropdown(false);};
+  const handleInput=v=>{setQuery(v);setSelected(null);setShowDropdown(true);};
+  const tc=selected?teamColor(selected.team):null;
+  return(<div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
+    <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
+      <div className="text-center"><div className="text-5xl mb-2">⚡</div><h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1><p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p></div>
+      <div className="space-y-2">
+        <label className="text-sm font-bold text-gray-700 block">Who are you?</label>
+        <div className="relative">
+          <input ref={inputRef} type="text" value={query} onChange={e=>handleInput(e.target.value)} onFocus={()=>query.trim()&&setShowDropdown(true)} placeholder="Search your name…" className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 pr-10" autoComplete="off"/>
+          {query&&<button onClick={()=>{setQuery("");setSelected(null);setShowDropdown(false);inputRef.current?.focus();}} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg">×</button>}
+          {showDropdown&&filtered.length>0&&(<div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-56 overflow-y-auto">
+            {filtered.map((m,i)=>{const mtc=teamColor(m.team);return(<button key={i} onClick={()=>handleSelect(m)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 text-left transition-colors border-b border-gray-50 last:border-0"><div className="flex-1"><p className="text-sm font-semibold text-gray-800">{m.name}</p><p className="text-xs text-gray-400">{m.team}</p></div><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${mtc.badge}`}>{m.team}</span></button>);})}
+          </div>)}
+          {showDropdown&&query.trim().length>=1&&filtered.length===0&&(<div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl px-4 py-3"><p className="text-xs text-gray-400">No matches. Ask the facilitator to add you.</p></div>)}
         </div>
-
-        {/* Name search */}
-        <div className="space-y-2">
-          <label className="text-sm font-bold text-gray-700 block">Who are you?</label>
-          <div className="relative">
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={e=>handleInput(e.target.value)}
-              onFocus={()=>query.trim()&&setShowDropdown(true)}
-              placeholder="Search your name…"
-              className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 pr-10"
-              autoComplete="off"
-            />
-            {query && (
-              <button onClick={()=>{setQuery("");setSelected(null);setShowDropdown(false);inputRef.current?.focus();}}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg">×</button>
-            )}
-            {showDropdown && filtered.length > 0 && (
-              <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-56 overflow-y-auto">
-                {filtered.map((m,i)=>{
-                  const mtc=teamColor(m.team);
-                  return(
-                    <button key={i} onClick={()=>handleSelect(m)}
-                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 text-left transition-colors border-b border-gray-50 last:border-0">
-                      <div className="flex-1">
-                        <p className="text-sm font-semibold text-gray-800">{m.name}</p>
-                        <p className="text-xs text-gray-400">{m.team}</p>
-                      </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${mtc.badge}`}>{m.team}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {showDropdown && query.trim().length >= 1 && filtered.length === 0 && (
-              <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl px-4 py-3">
-                <p className="text-xs text-gray-400">No matches. Ask the facilitator to add you.</p>
-              </div>
-            )}
-          </div>
-
-          {/* Selected confirmation */}
-          {selected && (
-            <div className={`rounded-xl border-2 px-4 py-3 flex items-center gap-3 ${tc.light}`}>
-              <div className="flex-1">
-                <p className="text-sm font-black">{selected.name}</p>
-                <p className="text-xs opacity-70">{selected.team} · {TEAM_CONTEXT[selected.team]?.role}</p>
-              </div>
-              <span className="text-lg">{TEAM_CONTEXT[selected.team]?.emoji}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Team members preview — shown when a team is identified */}
-        {selected && (
-          <div className="bg-gray-50 rounded-2xl p-4 space-y-2">
-            <p className="text-xs font-black text-gray-500 uppercase tracking-wide">Your team</p>
-            <div className="flex flex-wrap gap-1.5">
-              {TEAM_MEMBERS[selected.team].map((m,i)=>(
-                <span key={i} className={`text-xs px-2.5 py-1 rounded-full font-medium ${m===selected.name?`${tc.bg} text-white`:tc.badge}`}>{m}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Day picker */}
-        <div>
-          <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
-          <div className="grid grid-cols-2 gap-3">
-            {[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji})=>(
-              <button key={d} onClick={()=>setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day===d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300"}`}>
-                <div className="text-2xl mb-1">{emoji}</div>
-                <div className="font-bold">{label}</div>
-                <div className="text-xs opacity-70">{sub}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <button
-          onClick={()=>canEnter&&onEnter(selected.team,day,selected.name)}
-          disabled={!canEnter}
-          className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-          Enter the Hub →
-        </button>
-
-        {!selected && <p className="text-center text-xs text-gray-300">Search your name to get started</p>}
+        {selected&&(<div className={`rounded-xl border-2 px-4 py-3 flex items-center gap-3 ${tc.light}`}><div className="flex-1"><p className="text-sm font-black">{selected.name}</p><p className="text-xs opacity-70">{selected.team} · {TEAM_CONTEXT[selected.team]?.role}</p></div><span className="text-lg">{TEAM_CONTEXT[selected.team]?.emoji}</span></div>)}
+        {selected&&(<div className="bg-gray-50 rounded-2xl p-4 space-y-2"><p className="text-xs font-black text-gray-500 uppercase tracking-wide">Your team</p><div className="flex flex-wrap gap-1.5">{TEAM_MEMBERS[selected.team].map((m,i)=><span key={i} className={`text-xs px-2.5 py-1 rounded-full font-medium ${m===selected.name?`${tc.bg} text-white`:tc.badge}`}>{m}</span>)}</div></div>)}
       </div>
+      <div>
+        <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
+        <div className="grid grid-cols-2 gap-3">{[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(({d,label,sub,emoji})=>(
+          <button key={d} onClick={()=>setDay(d)} className={`py-4 rounded-xl border-2 text-sm font-semibold transition-all ${day===d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300"}`}><div className="text-2xl mb-1">{emoji}</div><div className="font-bold">{label}</div><div className="text-xs opacity-70">{sub}</div></button>
+        ))}</div>
+      </div>
+      <button onClick={()=>selected&&day&&onEnter(selected.team,day,selected.name)} disabled={!selected||!day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed">Enter the Hub →</button>
+      {!selected&&<p className="text-center text-xs text-gray-300">Search your name to get started</p>}
     </div>
-  );
+  </div>);
 }
 
-// ── Submit tab ───────────────────────────────────────────────
+// ── Submit Tab ───────────────────────────────────────────────
 function SubmitTab({user,onSave,syncStatus}){
   const [form,setForm]=useState(EMPTY_REQ);
   const [done,setDone]=useState(false);
@@ -341,7 +248,7 @@ function SubmitTab({user,onSave,syncStatus}){
   };
   const ta="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300";
   const sel="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
-  const steps=[{l:"Problem",ok:!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround?.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition?.trim()},{l:"Rate",ok:!!(form.impactScore&&form.frequencyScore&&form.riskScore&&form.leverageScore)}];
+  const steps=[{l:"Problem",ok:!!(form.problem?.trim()&&form.roleplayExample?.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround?.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition?.trim()}];
   return(<div className="space-y-4">
     {done&&<div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999}} className="bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl">✅ Saved! Add another one.</div>}
     <div className="bg-white rounded-xl border px-4 py-3 flex items-center gap-2 flex-wrap">
@@ -349,8 +256,7 @@ function SubmitTab({user,onSave,syncStatus}){
       <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus}/><span className="text-xs text-gray-400 italic">✨ Auto-translated</span></span>
     </div>
     <Section step="1" bgColor="bg-indigo-700" emoji="🔍" label="The Requirement" sublabel="Capture what happened while it's fresh. Write in any language.">
-      <Field label="Is this a bug or a new feature?" required><div className="flex gap-3">{ISSUE_TYPES.map(t=><button key={t} onClick={()=>f("issueType",t)} className={`flex-1 py-3 rounded-xl border-2 text-sm font-bold transition-all ${form.issueType===t?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-500 hover:border-indigo-300"}`}>{t==="Bug"?"🐛 Bug":"✨ New Feature"}</button>)}</div></Field>
-      <Field label={form.issueType==="Bug"?"What broke, slowed down or created risk?":"What new capability or feature is needed?"} required tipKey="problem"><textarea className={ta} rows={2} value={form.problem} onChange={e=>f("problem",e.target.value)} placeholder={form.issueType==="Bug"?"e.g. Editors don't know the required video format until after they've finished the cut.":"e.g. There's no way to preview how a super will look before sending for client review."}/></Field>
+      <Field label="What broke, slowed down or is missing?" required tipKey="problem"><textarea className={ta} rows={2} value={form.problem} onChange={e=>f("problem",e.target.value)} placeholder="e.g. Editors don't know the required video format until after they've finished the cut."/></Field>
       <Field label="Additional context & roleplay evidence" required tipKey="roleplay"><textarea className={ta} rows={4} value={form.roleplayExample} onChange={e=>f("roleplayExample",e.target.value)} placeholder="e.g. PM asked the client about aspect ratio. No response for 20 min. Editor assumed 9:16, finished the cut. Client replied asking for 16:9 — 45 min of rework."/></Field>
       <Field label="How often does this happen in real production?" required tipKey="frequency">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{FREQUENCIES.map(fr=>{const m=FREQ_META[fr];return(<button key={fr} onClick={()=>f("frequency",fr)} className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all ${form.frequency===fr?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-600 hover:border-indigo-300"}`}><span className="text-lg">{m.emoji}</span><span className="text-xs font-bold">{fr}</span><span className={`text-xs ${form.frequency===fr?"text-indigo-200":"text-gray-400"}`}>{m.desc}</span></button>);})}</div>
@@ -364,20 +270,11 @@ function SubmitTab({user,onSave,syncStatus}){
     </Section>
     <Section step="3" bgColor="bg-violet-600" emoji="🤖" label="Agent Potential" sublabel="Could AI handle this step?">
       <Field label="If we were to automate this, what level makes sense?" tipKey="agentPotential">
-        <div className="space-y-2">{AGENT_POTENTIALS.map(ap=>{const m=AGENT_META[ap];return(<button key={ap} onClick={()=>f("agentPotential",ap)} className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${form.agentPotential===ap?"bg-violet-600 border-violet-600 text-white":"bg-white border-gray-200 hover:border-violet-300"}`}><span className="text-xl flex-shrink-0">{m.emoji}</span><div><p className={`text-sm font-bold ${form.agentPotential===ap?"text-white":"text-gray-800"}`}>{ap}</p><p className={`text-xs mt-0.5 ${form.agentPotential===ap?"text-violet-200":"text-gray-500"}`}>{m.desc}</p></div>{form.agentPotential===ap&&<span className="ml-auto text-white">✓</span>}</button>);})}</div>
+        <div className="space-y-2">{AGENT_POTENTIALS.map(ap=>{const m=AGENT_META[ap];return(<button key={ap} onClick={()=>f("agentPotential",ap)} className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all ${form.agentPotential===ap?"bg-violet-600 border-violet-600 text-white":"bg-white border-gray-200 hover:border-violet-300"}`}><span className="text-xl flex-shrink-0">{m.emoji}</span><div><p className={`text-sm font-bold ${form.agentPotential===ap?"text-white":"text-gray-800"}`}>{ap}</p><p className={`text-xs mt-0.5 ${form.agentPotential===ap?"text-violet-200":"text-gray-500"}`}>{m.desc}</p></div>{form.agentPotential===ap&&<span className="ml-auto text-white">✓</span>}</button>);})}
       </Field>
     </Section>
-    <Section step="4" bgColor="bg-emerald-600" emoji="🎯" label="Definition of Solved" sublabel="The most important question — and the one teams skip most often.">
+    <Section step="4" bgColor="bg-emerald-600" emoji="🎯" label="Definition of Solved" sublabel="The most important question — what does success look like?">
       <Field label="How would we know this is fixed?" required tipKey="definition"><textarea className={ta} rows={4} value={form.definition} onChange={e=>f("definition",e.target.value)} placeholder="e.g. The brief always arrives at editing with the required format filled in. The editor never has to ask or guess."/></Field>
-    </Section>
-    <Section step="5" bgColor="bg-slate-700" emoji="⭐" label="Your Rating" sublabel="Rate this requirement from your perspective before submitting.">
-      <div className="grid grid-cols-2 gap-4">
-        <ScorePicker label="Impact" emoji="💥" color="blue" value={form.impactScore} onChange={v=>f("impactScore",v)} desc="How severe is the pain? How much does this affect output quality, client satisfaction, or team efficiency?"/>
-        <ScorePicker label="Frequency" emoji="🔁" color="orange" value={form.frequencyScore} onChange={v=>f("frequencyScore",v)} desc="How often does this come up in real production? 1 = rare, 5 = virtually every project."/>
-        <ScorePicker label="Risk" emoji="⚠️" color="red" value={form.riskScore} onChange={v=>f("riskScore",v)} desc="What's the downside of NOT fixing this? Consider client churn, team burnout, errors reaching clients."/>
-        <ScorePicker label="Strategic leverage" emoji="🚀" color="indigo" value={form.leverageScore} onChange={v=>f("leverageScore",v)} desc="If fixed, does this unlock scale, enable AI automation, or unblock multiple other problems?"/>
-      </div>
-      <p className="text-xs text-gray-400 pt-1 border-t">1 = low · 5 = critical &nbsp;·&nbsp; Max total score: 20</p>
     </Section>
     <button onClick={submit} disabled={!canSubmit||saving} className="w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-md">
       {saving?"✨ Translating & saving…":canSubmit?"Submit Requirement ✓":"Complete required fields to submit"}
@@ -386,237 +283,380 @@ function SubmitTab({user,onSave,syncStatus}){
   </div>);
 }
 
-// ── Requirements tab ─────────────────────────────────────────
-function RequirementsTab({reqs,user,onUpdate,onDelete}){
-  const [expanded,setExpanded]=useState(null);const [editing,setEditing]=useState(null);const [editForm,setEditForm]=useState(null);
-  const [fTeam,setFTeam]=useState("All");const [fStage,setFStage]=useState("All");const [fType,setFType]=useState("All");
-  const filtered=reqs.filter(r=>(fTeam==="All"||r.team===fTeam)&&(fStage==="All"||r.pipelineStage===fStage)&&(fType==="All"||r.issueType===fType));
+// ── Requirements Tab (Day 1) ─────────────────────────────────
+function RequirementsTab({reqs,user,onUpdate,onDelete,syncStatus}){
+  const [expanded,setExpanded]=useState(null);
+  const [editing,setEditing]=useState(null);
+  const [editForm,setEditForm]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [fTeam,setFTeam]=useState(user.team);
+  const [fStage,setFStage]=useState("All");
+
+  const filtered=reqs.filter(r=>(fTeam==="All"||r.team===fTeam)&&(fStage==="All"||r.pipelineStage===fStage));
+  const ranked=[...filtered].sort((a,b)=>getScore(b)-getScore(a));
+  const top5ids=top5ByTeam(reqs,fTeam==="All"?user.team:fTeam).map(r=>r.id);
   const ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
+
+  const saveScore=async(r,patch)=>{
+    setSaving(true);
+    await onUpdate(r.id,patch);
+    setSaving(false);
+  };
+
   return(<div className="space-y-4">
     <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center">
       <span className="text-xs font-semibold text-gray-500">Filter:</span>
       <select className="border rounded-lg px-2 py-1.5 text-xs" value={fTeam} onChange={e=>setFTeam(e.target.value)}><option value="All">All Teams</option>{TEAMS.map(t=><option key={t}>{t}</option>)}</select>
       <select className="border rounded-lg px-2 py-1.5 text-xs" value={fStage} onChange={e=>setFStage(e.target.value)}><option value="All">All Stages</option>{PIPELINE_STAGES.map(s=><option key={s}>{s}</option>)}</select>
-      <select className="border rounded-lg px-2 py-1.5 text-xs" value={fType} onChange={e=>setFType(e.target.value)}><option value="All">All Types</option>{ISSUE_TYPES.map(t=><option key={t}>{t}</option>)}</select>
-      <span className="ml-auto text-xs text-gray-400">{filtered.length} item{filtered.length!==1?"s":""}</span>
+      <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus}/><span className="text-xs text-gray-400">{ranked.length} item{ranked.length!==1?"s":""}</span></span>
     </div>
-    {filtered.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-    :filtered.map(r=>{
-      const tc=teamColor(r.team);const isOwner=r.team===user.team;const isEditing=editing===r.id;const score=getScore(r);
-      return(<div key={r.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={()=>!isEditing&&setExpanded(expanded===r.id?null:r.id)}>
-          <div className="flex items-start gap-3">
-            <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-              <div className="flex flex-wrap gap-1.5 mt-2">
+
+    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700">
+      <p className="font-bold mb-1">⭐ Rate your team's requirements</p>
+      <p>Expand each card to score it. The <strong>top 5 by score</strong> will be presented tomorrow. Scores are auto-saved.</p>
+    </div>
+
+    {ranked.length===0
+      ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
+      :ranked.map((r,idx)=>{
+        const tc=teamColor(r.team);
+        const isOwner=r.team===user.team;
+        const isEditing=editing===r.id;
+        const score=getScore(r);
+        const isTop5=top5ids.includes(r.id)&&score>0;
+        return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${isTop5?"border-l-4 border-l-indigo-500":""}`}>
+          <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={()=>!isEditing&&setExpanded(expanded===r.id?null:r.id)}>
+            <div className="flex items-start gap-3">
+              {isTop5&&<div className="flex-shrink-0 mt-0.5 text-lg" title="Top 5">{"🏆"}</div>}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <Badge cls={tc.badge}>{r.team}</Badge>
+                  {r.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {r.submittedBy}</Badge>}
+                  {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
+                  {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
+                  {score>0&&<Badge cls="bg-slate-100 text-slate-700">⭐ {score}/20</Badge>}
+                </div>
+              </div>
+              <span className="text-gray-300 text-lg mt-0.5">{expanded===r.id?"▲":"▼"}</span>
+            </div>
+          </div>
+
+          {expanded===r.id&&!isEditing&&(<div className="border-t bg-slate-50 p-4 space-y-4">
+            {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              {r.stakeholders?.length>0&&<div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</div>}
+              {r.consequences?.length>0&&<div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</div>}
+              {r.agentPotential&&<div><span className="font-semibold text-gray-600">Agent: </span>{r.agentPotential}</div>}
+              {r.workaround&&<div className="col-span-2"><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
+            </div>
+            {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+
+            {/* Scoring section — only for own team */}
+            {isOwner&&(<div className="bg-white rounded-xl border p-4 space-y-3">
+              <p className="text-xs font-black text-gray-700 uppercase tracking-wide">⭐ Rate this requirement</p>
+              <div className="grid grid-cols-2 gap-4">
+                <ScorePicker label="Impact" emoji="💥" color="blue" value={r.impactScore||0} onChange={v=>saveScore(r,{impactScore:v})} desc="How severe is the pain?"/>
+                <ScorePicker label="Frequency" emoji="🔁" color="orange" value={r.frequencyScore||0} onChange={v=>saveScore(r,{frequencyScore:v})} desc="How often in real production?"/>
+                <ScorePicker label="Risk" emoji="⚠️" color="red" value={r.riskScore||0} onChange={v=>saveScore(r,{riskScore:v})} desc="Cost of NOT fixing this?"/>
+                <ScorePicker label="Strategic leverage" emoji="🚀" color="indigo" value={r.leverageScore||0} onChange={v=>saveScore(r,{leverageScore:v})} desc="Does this unlock scale or AI?"/>
+              </div>
+              {score>0&&<div className="flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span><span className={`font-bold ml-auto ${score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600"}`}>Total: {score}/20 — {autoBucket(score)}</span></div>}
+            </div>)}
+
+            {isOwner&&<div className="flex gap-2 pt-1">
+              <button onClick={()=>{setEditing(r.id);setEditForm({...r});}} className="flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50">✏️ Edit</button>
+              <button onClick={()=>onDelete(r.id)} className="py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50">🗑️ Delete</button>
+            </div>}
+          </div>)}
+
+          {isEditing&&editForm&&(<div className="border-t bg-slate-50 p-4 space-y-3">
+            <p className="text-xs font-bold text-gray-600">✏️ Editing — fields auto-translate to English on save</p>
+            <textarea className={ta} rows={2} value={editForm.problem} onChange={e=>setEditForm(p=>({...p,problem:e.target.value}))} placeholder="Problem"/>
+            <textarea className={ta} rows={3} value={editForm.roleplayExample} onChange={e=>setEditForm(p=>({...p,roleplayExample:e.target.value}))} placeholder="Context & evidence"/>
+            <textarea className={ta} rows={2} value={editForm.definition} onChange={e=>setEditForm(p=>({...p,definition:e.target.value}))} placeholder="Definition of solved"/>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Frequency</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.frequency} onChange={e=>setEditForm(p=>({...p,frequency:e.target.value}))}><option value="">Select…</option>{FREQUENCIES.map(f=><option key={f}>{f}</option>)}</select></div>
+              <div><label className="text-xs font-bold text-gray-500 block mb-1">Pipeline stage</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.pipelineStage||""} onChange={e=>setEditForm(p=>({...p,pipelineStage:e.target.value}))}><option value="">Select…</option>{PIPELINE_STAGES.map(s=><option key={s}>{s}</option>)}</select></div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={async()=>{
+                const translated=await gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition});
+                await onUpdate(editForm.id,{...editForm,...translated});
+                setEditing(null);setEditForm(null);
+              }} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">💾 Save & Translate</button>
+              <button onClick={()=>{setEditing(null);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button>
+            </div>
+          </div>)}
+        </div>);
+      })
+    }
+  </div>);
+}
+
+// ── Read-Out Tab (Day 2) ─────────────────────────────────────
+function ReadOutTab({reqs,onUpdate}){
+  const [activeTeam,setActiveTeam]=useState(TEAMS[0]);
+  const [cursor,setCursor]=useState(0);
+  const [editing,setEditing]=useState(false);
+  const [editForm,setEditForm]=useState(null);
+  const activeTeams=[...new Set(reqs.map(r=>r.team))];
+  const teamReqs=top5ByTeam(reqs,activeTeam);
+  const current=teamReqs[cursor];
+  const tc=teamColor(activeTeam);
+  const ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
+  const score=current?getScore(current):0;
+  return(<div className="space-y-4">
+    <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">
+      {activeTeams.map(t=>{const c=teamColor(t);return <button key={t} onClick={()=>{setActiveTeam(t);setCursor(0);setEditing(false);}} className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all ${activeTeam===t?c.light:"border-gray-200 text-gray-500"}`}>{t}</button>;})}
+    </div>
+    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-700 flex items-center gap-2">
+      <span>🏆</span><span>Showing <strong>top 5</strong> by score for each team</span>
+    </div>
+    {teamReqs.length===0
+      ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No scored requirements from {activeTeam} yet.</p></div>
+      :<>
+        {current&&!editing&&(<div className="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 flex-wrap"><Badge cls={tc.badge}>{current.team}</Badge>{current.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {current.submittedBy}</Badge>}<span className="text-xs font-bold text-gray-400">#{cursor+1} of {teamReqs.length}</span></div>
+            <button onClick={()=>{setEditing(true);setEditForm({...current});}} className="text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0">✏️ Edit</button>
+          </div>
+          <p className="text-xl font-black text-gray-900 leading-snug">{current.problem}</p>
+          <div className="flex flex-wrap gap-2">
+            {current.frequency&&<div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]?.emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}
+            {current.agentPotential&&<Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}
+            {current.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{current.pipelineStage}</Badge>}
+          </div>
+          {current.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
+          {current.workaround&&<div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><p className="text-xs font-bold text-slate-600 mb-1">🔧 Current workaround</p><p className="text-sm text-slate-700 leading-relaxed">{current.workaround}</p></div>}
+          {current.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
+          {score>0&&<div className="bg-white border rounded-xl p-3 flex flex-wrap gap-4 text-xs text-gray-500">
+            <span>💥 Impact: <strong>{current.impactScore||0}</strong></span>
+            <span>🔁 Frequency: <strong>{current.frequencyScore||0}</strong></span>
+            <span>⚠️ Risk: <strong>{current.riskScore||0}</strong></span>
+            <span>🚀 Leverage: <strong>{current.leverageScore||0}</strong></span>
+            <span className={`font-black ml-auto ${score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600"}`}>{score}/20 · {autoBucket(score)}</span>
+          </div>}
+        </div>)}
+
+        {current&&editing&&editForm&&(<div className="bg-white rounded-2xl border-2 border-indigo-300 shadow-lg p-6 space-y-4">
+          <div className="flex items-center justify-between"><p className="text-sm font-black text-gray-800">✏️ Editing card</p><span className="text-xs text-gray-400 italic">Will auto-translate to English</span></div>
+          <textarea className={ta} rows={2} value={editForm.problem} onChange={e=>setEditForm(p=>({...p,problem:e.target.value}))} placeholder="Problem"/>
+          <textarea className={ta} rows={4} value={editForm.roleplayExample} onChange={e=>setEditForm(p=>({...p,roleplayExample:e.target.value}))} placeholder="Context & evidence"/>
+          <textarea className={ta} rows={2} value={editForm.workaround} onChange={e=>setEditForm(p=>({...p,workaround:e.target.value}))} placeholder="Workaround"/>
+          <textarea className={ta} rows={3} value={editForm.definition} onChange={e=>setEditForm(p=>({...p,definition:e.target.value}))} placeholder="Definition of solved"/>
+          <div className="flex gap-2">
+            <button onClick={async()=>{
+              const translated=await gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition});
+              await onUpdate(editForm.id,{...editForm,...translated});
+              setEditing(false);setEditForm(null);
+            }} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">💾 Save & Translate</button>
+            <button onClick={()=>{setEditing(false);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button>
+          </div>
+        </div>)}
+
+        <div className="flex gap-3">
+          <button onClick={()=>{setCursor(c=>Math.max(0,c-1));setEditing(false);}} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button>
+          <button onClick={()=>{setCursor(c=>Math.min(teamReqs.length-1,c+1));setEditing(false);}} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button>
+        </div>
+        <div className="space-y-1">{teamReqs.map((r,i)=>{const s=getScore(r);return<button key={r.id} onClick={()=>{setCursor(i);setEditing(false);}} className={`w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 ${cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50"}`}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={`font-semibold flex-1 ${cursor===i?"text-indigo-700":"text-gray-700"}`}>{r.problem}</span><span className={`font-bold text-xs ${s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500"}`}>{s}pts</span></button>;})}</div>
+      </>
+    }
+  </div>);
+}
+
+// ── Synthesis & Vote Tab (Day 2) ──────────────────────────────
+function SynthesisVoteTab({reqs,votes,votingClosed,user,onVote,onCloseVoting,onResetVoting,onUpdateReq}){
+  const [expanded,setExpanded]=useState(null);
+  const vid=(user.name||user.team).toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
+  const myVotes=votes[vid]||{};
+  const myVotesList=Object.entries(myVotes).map(([id,pts])=>({id,pts:Number(pts)}));
+  const myTotalUsed=myVotesList.reduce((s,v)=>s+v.pts,0);
+  const MAX_VOTES=3;
+  const getMyVote=id=>myVotes[String(id)]||0;
+  const getTotalVotes=id=>{let t=0;Object.values(votes).forEach(v=>{t+=(Number(v[String(id)])||0);});return t;};
+  // Count unique voters (people) who have cast at least one vote
+  const allPeople=Object.values(TEAM_MEMBERS).flat();
+  const voterIds=allPeople.map(n=>n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,""));
+  const totalPeople=allPeople.length;
+  const votedCount=voterIds.filter(v=>Object.keys(votes[v]||{}).length>0).length;
+  // Per-team voted status (at least one member voted)
+  const teamVotedStatus=TEAMS.map(t=>{
+    const members=TEAM_MEMBERS[t]||[];
+    const voted=members.filter(n=>{const v=n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");return Object.keys(votes[v]||{}).length>0;});
+    return {team:t,voted:voted.length,total:members.length};
+  });
+  const ranked=[...reqs].sort((a,b)=>getScore(b)-getScore(a));
+  const medals=["🥇","🥈","🥉"];
+
+  // Results view (voting closed)
+  if(votingClosed){
+    const results=[...reqs].map(r=>({...r,totalVotes:getTotalVotes(r.id),selfScore:getScore(r)})).sort((a,b)=>(b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore));
+    return(<div className="space-y-4">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"><span className="text-2xl">🏁</span><div><p className="text-sm font-bold text-emerald-700">Voting closed — final ranking</p><p className="text-xs text-emerald-600">Sorted by votes + self-score combined</p></div></div>
+      {results.map((r,i)=>{const tc=teamColor(r.team);const s=getScore(r);const bucket=autoBucket(s);return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${i<3?"border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:""}`}>
+        <div className="p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50" onClick={()=>setExpanded(expanded===r.id?null:r.id)}>
+          <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i]||`#${i+1}`}</div>
+          <div className="flex-1 min-w-0 space-y-1">
+            <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+            <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(bucket)}`}>{bucket}</span></div>
+            <div className="flex gap-3 text-xs text-gray-500 pt-1"><span>🗳️ {r.totalVotes} vote pts</span><span>⭐ {s} self-score</span><span className="font-bold text-indigo-600 ml-auto">Combined: {r.totalVotes+s}</span></div>
+          </div>
+          <span className="text-gray-300">{expanded===r.id?"▲":"▼"}</span>
+        </div>
+        {expanded===r.id&&<div className="border-t bg-slate-50 p-4 space-y-3">
+          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+          {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+          <div className="bg-white rounded-xl border p-3 space-y-2">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">📌 Optional classification</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div><p className="text-xs font-bold text-gray-600 mb-1">🗂️ Cluster</p><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div>
+              <div><p className="text-xs font-bold text-gray-600 mb-1">🏷️ Category</p><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/></div>
+            </div>
+          </div>
+        </div>}
+      </div>);})}
+      <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50">🔄 Reset voting</button>
+    </div>);
+  }
+
+  // Active voting view
+  return(<div className="space-y-4">
+    {/* Score legend */}
+    <div className="bg-white rounded-xl border p-4 space-y-2">
+      <p className="text-xs font-bold text-gray-600">📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)</p>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-rose-600">🔥 Must-fix</p><p className="text-xs font-bold text-gray-700">16–20</p><p className="text-xs text-gray-400">avg 4+</p></div>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-amber-600">📈 Scale enabler</p><p className="text-xs font-bold text-gray-700">10–15</p><p className="text-xs text-gray-400">avg 2.5–3.75</p></div>
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-indigo-600">🚀 Strategic bet</p><p className="text-xs font-bold text-gray-700">1–9</p><p className="text-xs text-gray-400">avg below 2.5</p></div>
+      </div>
+    </div>
+
+    {/* Vote budget */}
+    <div className="bg-white rounded-xl border p-4 space-y-2">
+      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-800">🗳️ Your votes</p><span className="text-xs font-bold text-indigo-600">{myTotalUsed}/{MAX_VOTES} used</span></div>
+      <p className="text-xs text-gray-500">Each person has <strong>3 votes total</strong>. You can put all 3 on a single item or spread them.</p>
+      <div className="flex gap-1.5">{[...Array(MAX_VOTES)].map((_,i)=><div key={i} className={`flex-1 h-2 rounded-full ${i<myTotalUsed?"bg-indigo-500":"bg-gray-200"}`}/>)}</div>
+      <div className="flex items-center justify-between text-xs text-gray-400">
+        <span>{votedCount} of {totalPeople} people voted</span>
+        {myTotalUsed>0&&<span className="text-indigo-500 font-semibold">{MAX_VOTES-myTotalUsed} remaining</span>}
+      </div>
+    </div>
+
+    {/* Requirements list */}
+    {ranked.map(r=>{
+      const tc=teamColor(r.team);const score=getScore(r);const bucket=autoBucket(score);
+      const myVote=getMyVote(r.id);const totalVotes=getTotalVotes(r.id);
+      const remaining=MAX_VOTES-myTotalUsed;
+      const isOpen=expanded===r.id;
+      return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${myVote>0?"border-indigo-300 border-2":""}`}>
+        <div className="p-4">
+          <div className="flex items-start gap-3 cursor-pointer" onClick={()=>setExpanded(isOpen?null:r.id)}>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
                 <Badge cls={tc.badge}>{r.team}</Badge>
-                {r.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {r.submittedBy}</Badge>}
-                {r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(bucket)}`}>{bucket}</span>
                 {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
-                {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
+                {r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
               </div>
             </div>
-            {score>0&&<div className="text-center flex-shrink-0"><div className="text-xl font-black text-indigo-600">{score}</div><div className="text-xs text-gray-400">pts</div></div>}
+            <div className="text-right flex-shrink-0">
+              <div className="text-xl font-black text-indigo-600">{score}</div>
+              <div className="text-xs text-gray-400">score</div>
+              {totalVotes>0&&<div className="text-xs font-bold text-emerald-600">{totalVotes}🗳️</div>}
+            </div>
+            <span className="text-gray-300 mt-1">{isOpen?"▲":"▼"}</span>
           </div>
-        </div>
-        {expanded===r.id&&!isEditing&&(<div className="border-t bg-slate-50 p-4 space-y-3">
-          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-            {r.stakeholders?.length>0&&<div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</div>}
-            {r.consequences?.length>0&&<div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</div>}
-            {r.agentPotential&&<div><span className="font-semibold text-gray-600">Agent: </span>{r.agentPotential}</div>}
-            {r.workaround&&<div className="col-span-2"><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
-          </div>
-          {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-          {score>0&&<div className="flex gap-3 text-xs text-gray-500 bg-white rounded-xl p-3 border"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span><span className="font-bold text-indigo-600 ml-auto">Total: {score}</span></div>}
-          {isOwner&&<div className="flex gap-2 pt-1"><button onClick={()=>{setEditing(r.id);setEditForm({...r});}} className="flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50">✏️ Edit</button><button onClick={()=>onDelete(r.id)} className="py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50">🗑️ Delete</button></div>}
-        </div>)}
-        {isEditing&&editForm&&(<div className="border-t bg-slate-50 p-4 space-y-3">
-          <p className="text-xs font-bold text-gray-600">Editing requirement</p>
-          <textarea className={ta} rows={2} value={editForm.problem} onChange={e=>setEditForm(p=>({...p,problem:e.target.value}))} placeholder="Problem"/>
-          <textarea className={ta} rows={3} value={editForm.roleplayExample} onChange={e=>setEditForm(p=>({...p,roleplayExample:e.target.value}))} placeholder="Context & evidence"/>
-          <textarea className={ta} rows={2} value={editForm.definition} onChange={e=>setEditForm(p=>({...p,definition:e.target.value}))} placeholder="Definition of solved"/>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs font-bold text-gray-500 block mb-1">Frequency</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.frequency} onChange={e=>setEditForm(p=>({...p,frequency:e.target.value}))}><option value="">Select…</option>{FREQUENCIES.map(f=><option key={f}>{f}</option>)}</select></div>
-            <div><label className="text-xs font-bold text-gray-500 block mb-1">Type</label><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={editForm.issueType||"New Feature"} onChange={e=>setEditForm(p=>({...p,issueType:e.target.value}))}>{ISSUE_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <ScorePicker label="Impact" emoji="💥" color="blue" value={editForm.impactScore||0} onChange={v=>setEditForm(p=>({...p,impactScore:v}))}/>
-            <ScorePicker label="Frequency" emoji="🔁" color="orange" value={editForm.frequencyScore||0} onChange={v=>setEditForm(p=>({...p,frequencyScore:v}))}/>
-            <ScorePicker label="Risk" emoji="⚠️" color="red" value={editForm.riskScore||0} onChange={v=>setEditForm(p=>({...p,riskScore:v}))}/>
-            <ScorePicker label="Strategic" emoji="🚀" color="indigo" value={editForm.leverageScore||0} onChange={v=>setEditForm(p=>({...p,leverageScore:v}))}/>
-          </div>
-          <div className="flex gap-2"><button onClick={async()=>{await onUpdate(editForm.id,editForm);setEditing(null);setEditForm(null);}} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">Save</button><button onClick={()=>{setEditing(null);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button></div>
-        </div>)}
-      </div>);
-    })}
-  </div>);
-}
 
-// ── Read-Out tab ─────────────────────────────────────────────
-function ReadOutTab({reqs}){
-  const [activeTeam,setActiveTeam]=useState(TEAMS[0]);const [cursor,setCursor]=useState(0);
-  const activeTeams=[...new Set(reqs.map(r=>r.team))];
-  const teamReqs=reqs.filter(r=>r.team===activeTeam);const current=teamReqs[cursor];
-  return(<div className="space-y-4">
-    <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">{activeTeams.map(t=>{const tc=teamColor(t);return <button key={t} onClick={()=>{setActiveTeam(t);setCursor(0);}} className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all ${activeTeam===t?tc.light:"border-gray-200 text-gray-500"}`}>{t}</button>;})}</div>
-    {teamReqs.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements from {activeTeam} yet.</p></div>:<>
-      {current&&(<div className="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4 min-h-64">
-        <div className="flex items-center justify-between"><Badge cls={teamColor(current.team).badge}>{current.team}</Badge><div className="flex items-center gap-2">{current.issueType&&<Badge cls={typeBadge(current.issueType)}>{current.issueType}</Badge>}<span className="text-xs font-bold text-gray-400">{cursor+1} / {teamReqs.length}</span></div></div>
-        <p className="text-xl font-black text-gray-900 leading-snug">{current.problem}</p>
-        <div className="flex flex-wrap gap-2">{current.frequency&&<div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]?.emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}{current.agentPotential&&<Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}</div>
-        {current.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
-        {current.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
-      </div>)}
-      <div className="flex gap-3"><button onClick={()=>setCursor(c=>Math.max(0,c-1))} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button><button onClick={()=>setCursor(c=>Math.min(teamReqs.length-1,c+1))} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button></div>
-      <div className="space-y-1">{teamReqs.map((r,i)=><button key={r.id} onClick={()=>setCursor(i)} className={`w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 ${cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50"}`}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={`font-semibold flex-1 ${cursor===i?"text-indigo-700":"text-gray-700"}`}>{r.problem}</span><span className="text-gray-400">{r.frequency}</span></button>)}</div>
-    </>}
-  </div>);
-}
+          {/* Vote buttons */}
+          <div className="flex gap-2 mt-3 items-center">
+            <span className="text-xs text-gray-400 font-semibold flex-shrink-0">Vote:</span>
+            {[1,2,3].map(n=>{
+              const newVal=myVote===n?0:n;
+              const wouldAdd=newVal-myVote;
+              const canAdd=myTotalUsed+wouldAdd<=MAX_VOTES;
+              const isActive=myVote===n;
+              return(<button key={n} onClick={()=>(isActive||canAdd)&&onVote(r.id,newVal)}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all ${isActive?"bg-indigo-600 border-indigo-600 text-white":canAdd?"border-gray-200 text-gray-500 hover:border-indigo-300":"border-gray-100 text-gray-300 cursor-not-allowed"}`}>
+                {isActive?"✓ ":""}{n} vote{n>1?"s":""}
+              </button>);
+            })}
+            {myVote>0&&<button onClick={()=>onVote(r.id,0)} className="px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50 flex-shrink-0">✕</button>}
+          </div>
+        </div>
 
-// ── Synthesis tab ────────────────────────────────────────────
-function SynthesisTab({reqs,onUpdateReq}){
-  const [expanded,setExpanded]=useState(null);
-  const ranked=[...reqs].sort((a,b)=>getScore(b)-getScore(a));
-  return(<div className="space-y-4">
-    <div className="bg-white rounded-xl border p-4 space-y-3">
-      <div><p className="font-bold text-gray-800 text-sm">Facilitator view — Colo / Ale</p><p className="text-xs text-gray-500 mt-0.5">Requirements ordered by score. Expand each one to see full details before assigning cluster and category.</p></div>
-      <div className="bg-slate-50 rounded-xl p-3 space-y-2">
-        <p className="text-xs font-bold text-gray-600">📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)</p>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-rose-600">🔥 Must-fix</p><p className="text-xs font-bold text-gray-700">Score 16–20</p><p className="text-xs text-gray-400">avg 4+ per criteria</p></div>
-          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-amber-600">📈 Scale enabler</p><p className="text-xs font-bold text-gray-700">Score 10–15</p><p className="text-xs text-gray-400">avg 2.5–3.75</p></div>
-          <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-indigo-600">🚀 Strategic bet</p><p className="text-xs font-bold text-gray-700">Score 1–9</p><p className="text-xs text-gray-400">avg below 2.5</p></div>
-        </div>
-      </div>
-    </div>
-    {ranked.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-    :ranked.map((r,idx)=>{
-      const tc=teamColor(r.team);const score=getScore(r);const suggested=autoBucket(score);const isOpen=expanded===r.id;
-      return(<div key={r.id} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <div className="p-4 flex items-start gap-3 cursor-pointer hover:bg-gray-50" onClick={()=>setExpanded(isOpen?null:r.id)}>
-          <div className="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-black text-indigo-600">#{idx+1}</div>
-          <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-            <div className="flex flex-wrap gap-1.5 mt-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}{r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}{r.cluster&&r.cluster!=="Unclustered"&&<Badge cls="bg-slate-100 text-slate-600">🗂️ {r.cluster}</Badge>}{r.category&&<Badge cls={catBadge(r.category)}>{r.category}</Badge>}</div>
-          </div>
-          <div className="flex-shrink-0 text-center bg-indigo-50 rounded-xl px-3 py-1.5 min-w-14">
-            <div className="text-2xl font-black text-indigo-600 leading-tight">{score}</div><div className="text-xs text-gray-400">score</div>
-            {score>0&&<div className="text-xs text-gray-400 mt-0.5">💥{r.impactScore||0}·🔁{r.frequencyScore||0}·⚠️{r.riskScore||0}·🚀{r.leverageScore||0}</div>}
-          </div>
-          <span className="text-gray-300 text-lg mt-0.5">{isOpen?"▲":"▼"}</span>
-        </div>
-        {isOpen&&(<div className="border-t bg-slate-50 p-4 space-y-4">
-          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+        {/* Expanded details */}
+        {isOpen&&<div className="border-t bg-slate-50 p-4 space-y-3">
+          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
           {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border">
-            {r.pipelineStage&&<div><span className="font-semibold text-gray-500">Pipeline: </span><span className="text-gray-700">{r.pipelineStage}</span></div>}
-            {r.stakeholders?.length>0&&<div><span className="font-semibold text-gray-500">Affected: </span><span className="text-gray-700">{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</span></div>}
-            {r.consequences?.length>0&&<div><span className="font-semibold text-gray-500">Cost: </span><span className="text-gray-700">{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</span></div>}
-            {r.workaround&&<div className="col-span-2"><span className="font-semibold text-gray-500">Workaround: </span><span className="text-gray-700">{r.workaround}</span></div>}
-          </div>
-          <div className="bg-white rounded-xl border p-4 space-y-3">
-            <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">📌 Assign</p>
-            <div className="space-y-3">
-              <div className="flex items-start gap-3"><div className="flex-shrink-0 w-24 pt-1.5"><p className="text-xs font-bold text-gray-700">🗂️ Cluster</p><p className="text-xs text-gray-400 mt-0.5">Thematic group</p></div><div className="flex-1"><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div></div>
-              <div className="border-t pt-3 flex items-start gap-3"><div className="flex-shrink-0 w-24 pt-1.5"><p className="text-xs font-bold text-gray-700">🏷️ Category</p><p className="text-xs text-gray-400 mt-0.5">Type of work</p></div><div className="flex-1"><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/>{r.category&&CAT_META[r.category]&&<p className="text-xs text-gray-400 italic mt-1">{CAT_META[r.category].desc}</p>}</div></div>
-              <div className="border-t pt-3 flex items-start gap-3"><div className="flex-shrink-0 w-24 pt-1.5"><p className="text-xs font-bold text-gray-700">🪣 Bucket</p><p className="text-xs text-gray-400 mt-0.5">Suggested: <span className={`font-bold ${suggested==="Must-fix"?"text-rose-600":suggested==="Scale enabler"?"text-amber-600":"text-indigo-600"}`}>{suggested}</span></p></div><div className="flex-1"><select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={r.bucket||suggested} onChange={e=>onUpdateReq(r.id,{bucket:e.target.value})}>{BUCKETS.map(b=><option key={b}>{b}</option>)}</select></div></div>
+          {r.workaround&&<p className="text-xs text-gray-600"><span className="font-semibold">Workaround: </span>{r.workaround}</p>}
+          <div className="text-xs text-gray-400 flex gap-3"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span></div>
+          <div className="bg-white rounded-xl border p-3 space-y-2">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">📌 Optional classification</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div><p className="text-xs font-bold text-gray-600 mb-1">🗂️ Cluster</p><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={v=>onUpdateReq(r.id,{cluster:v})} placeholder="Select cluster…"/></div>
+              <div><p className="text-xs font-bold text-gray-600 mb-1">🏷️ Category</p><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={v=>onUpdateReq(r.id,{category:v})} placeholder="Select category…"/></div>
             </div>
           </div>
-        </div>)}
+        </div>}
       </div>);
     })}
-  </div>);
-}
 
-// ── Voting tab ───────────────────────────────────────────────
-function VotingTab({reqs,votes,votingClosed,user,onVote,onCloseVoting,onResetVoting}){
-  const vid=user.team.toLowerCase().replace(/\s+/g,"-");
-  const myVotes=votes[vid]||{};
-  const myVotesList=Object.entries(myVotes).map(([id,pts])=>({id,pts}));
-  const getMyVote=id=>myVotes[String(id)]||0;
-  const getTotalVotes=id=>{let t=0;Object.values(votes).forEach(v=>{t+=(v[String(id)]||0);});return t;};
-  const votersWhoVoted=Object.keys(votes).filter(v=>Object.keys(votes[v]||{}).length>0);
-  const ranked=[...reqs].map(r=>({...r,totalVotes:getTotalVotes(r.id),selfScore:getScore(r)})).sort((a,b)=>(b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore));
-  const medals=["🥇","🥈","🥉"];
-  if(votingClosed)return(<div className="space-y-4">
-    <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"><span className="text-2xl">🏁</span><div><p className="text-sm font-bold text-emerald-700">Voting closed!</p><p className="text-xs text-emerald-600">Final ranking by votes + self-score</p></div></div>
-    {ranked.map((r,i)=>{const tc=teamColor(r.team);return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm p-4 flex gap-3 items-start ${i<3?"border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:""}`}>
-      <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i]||`#${i+1}`}</div>
-      <div className="flex-1 min-w-0 space-y-1"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-        <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}</div>
-        <div className="flex gap-3 text-xs text-gray-500 pt-1"><span>🗳️ {r.totalVotes} vote pts</span><span>⭐ {r.selfScore} self score</span><span className="font-bold text-indigo-600 ml-auto">Total: {r.totalVotes+r.selfScore}</span></div>
-      </div>
-    </div>);})}
-    <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50 hover:text-gray-600">🔄 Reset voting (clears all votes)</button>
-  </div>);
-  return(<div className="space-y-4">
-    <div className="bg-white rounded-xl border p-4 space-y-2">
-      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-800">🗳️ Cast your votes</p><span className="text-xs text-gray-400">{votersWhoVoted.length} of {TEAMS.length} teams voted</span></div>
-      <p className="text-xs text-gray-500">You have 3 votes: worth <strong>3pts</strong>, <strong>2pts</strong>, and <strong>1pt</strong>. You can put multiple votes on the same item.</p>
-      <div className="flex gap-2 flex-wrap">
-        {[3,2,1].map(p=>{const used=myVotesList.find(v=>v.pts===p);const label=used?(reqs.find(r=>String(r.id)===used.id)?.problem?.slice(0,20)+"…"||"voted"):"available";return(<div key={p} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 ${used?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-400"}`}>{p}pt {used?"→ "+label:label}</div>);})}
-      </div>
-    </div>
-    {reqs.map(r=>{
-      const tc=teamColor(r.team);const myVote=getMyVote(r.id);const total=getTotalVotes(r.id);
-      return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${myVote>0?"border-indigo-300":""}`}>
-        <div className="p-4">
-          <div className="flex items-start gap-3">
-            <div className="flex-1 min-w-0"><p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-              <div className="flex flex-wrap gap-1.5 mt-1.5"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}</div>
-            </div>
-            <div className="text-center flex-shrink-0"><div className="text-2xl font-black text-indigo-600">{total}</div><div className="text-xs text-gray-400">pts</div></div>
-          </div>
-          <div className="flex gap-2 mt-3">
-            {[3,2,1].map(p=>{const isActive=myVote===p;const isUsed=!isActive&&!!myVotesList.find(v=>v.pts===p);return(<button key={p} disabled={isUsed} onClick={()=>onVote(r.id,isActive?0:p)} className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all ${isActive?"bg-indigo-600 border-indigo-600 text-white":isUsed?"border-gray-100 text-gray-300 cursor-not-allowed":"border-gray-200 text-gray-500 hover:border-indigo-300"}`}>{isActive?"✓ ":""}{p}pt{p!==1?"s":""}</button>);})}
-            {myVote>0&&<button onClick={()=>onVote(r.id,0)} className="px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50">✕</button>}
-          </div>
-        </div>
-      </div>);
-    })}
+    {/* Voting controls */}
     <div className="bg-white rounded-xl border p-4 space-y-3">
-      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-700">Close voting</p><span className="text-xs text-gray-400">{votersWhoVoted.length}/{TEAMS.length} teams voted</span></div>
-      {TEAMS.map(t=>{const v=t.toLowerCase().replace(/\s+/g,"-");const voted=Object.keys(votes[v]||{}).length>0;return <div key={t} className="flex items-center gap-2 text-xs"><div className={`w-2 h-2 rounded-full ${voted?"bg-emerald-500":"bg-gray-300"}`}/><span className={voted?"text-gray-700 font-semibold":"text-gray-400"}>{t}</span>{voted&&<span className="text-emerald-500">✓ voted</span>}</div>;})}
+      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-700">Voting status</p><span className="text-xs text-gray-400">{votedCount}/{totalPeople} people voted</span></div>
+      {teamVotedStatus.map(({team,voted,total})=>{const tc=teamColor(team);return(<div key={team} className="flex items-center gap-2 text-xs"><div className={`w-2 h-2 rounded-full flex-shrink-0 ${voted>0?"bg-emerald-500":"bg-gray-300"}`}/><span className={`flex-1 ${voted>0?"text-gray-700 font-semibold":"text-gray-400"}`}>{team}</span><span className={`${voted===total?"text-emerald-600 font-bold":"text-gray-400"}`}>{voted}/{total} voted</span></div>);})}
       <button onClick={onCloseVoting} className="w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700">🏁 Close voting & show results</button>
-      <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50 hover:text-gray-600">🔄 Reset voting (clears all votes)</button>
+      <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50">🔄 Reset all votes</button>
     </div>
   </div>);
 }
 
-// ── Engineering tab ──────────────────────────────────────────
+// ── Engineering Tab (Day 2) ──────────────────────────────────
 function BestPracticesPanel(){
   const [tab,setTab]=useState("epics");
   return(<div className="bg-white rounded-xl border shadow-sm overflow-hidden sticky top-4">
     <div className="bg-slate-800 px-4 py-3"><p className="text-sm font-black text-white">📖 Best Practices</p><p className="text-xs text-slate-400 mt-0.5">Keep these in mind when reviewing</p></div>
-    <div className="flex border-b">
-      <button onClick={()=>setTab("epics")} className={`flex-1 py-2 text-xs font-bold transition-colors ${tab==="epics"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400 hover:text-gray-600"}`}>Epics</button>
-      <button onClick={()=>setTab("tickets")} className={`flex-1 py-2 text-xs font-bold transition-colors ${tab==="tickets"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400 hover:text-gray-600"}`}>Tickets</button>
-    </div>
-    <div className="p-3 space-y-3">{BEST_PRACTICES[tab].map((p,i)=><div key={i} className="flex gap-2.5 items-start"><span className="text-base flex-shrink-0">{p.icon}</span><div><p className="text-xs font-bold text-gray-800">{p.title}</p><p className="text-xs text-gray-500 leading-relaxed mt-0.5">{p.desc}</p></div></div>)}</div>
+    <div className="flex border-b"><button onClick={()=>setTab("epics")} className={`flex-1 py-2 text-xs font-bold ${tab==="epics"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400"}`}>Epics</button><button onClick={()=>setTab("tickets")} className={`flex-1 py-2 text-xs font-bold ${tab==="tickets"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400"}`}>Tickets</button></div>
+    <div className="p-3 space-y-3">{BEST_PRACTICES[tab].map((p,i)=><div key={i} className="flex gap-2.5 items-start"><span className="text-base flex-shrink-0">{p.icon}</span><div><p className="text-xs font-bold text-gray-800">{p.title}</p><p className="text-xs text-gray-500 mt-0.5">{p.desc}</p></div></div>)}</div>
   </div>);
 }
 
-function EngineeringTab({reqs}){
+function EngineeringTab({reqs,votes,votingClosed}){
   const [step,setStep]=useState("select");
   const [selectedIds,setSelected]=useState([]);
-  const [additionalContext,setAdditionalContext]=useState("");
+  const [reqContexts,setReqContexts]=useState({});
+  const [expandedReq,setExpandedReq]=useState(null);
   const [epics,setEpics]=useState([]);
   const [generating,setGenerating]=useState(false);
   const [genError,setGenError]=useState("");
   const [jsonInput,setJsonInput]=useState("");
   const [jsonError,setJsonError]=useState("");
-  const [pushedReqIds, setPushedReqIds] = useState([]);
+  const [pushedReqIds,setPushedReqIds]=useState([]);
+  const [pushResult,setPushResult]=useState(null);
 
-  const clusterOf=r=>r.cluster&&r.cluster!=="Unclustered"?r.cluster:"Unclustered";
-  const byCluster=reqs.reduce((acc,r)=>{const c=clusterOf(r);if(!acc[c])acc[c]=[];acc[c].push(r);return acc;},{});
-  const selectedReqs=reqs.filter(r=>selectedIds.includes(r.id));
+  // Top 10 by votes
+  const getTotalVotes=id=>{let t=0;Object.values(votes).forEach(v=>{t+=(Number(v[String(id)])||0);});return t;};
+  const getScore2=r=>getScore(r)+getTotalVotes(r.id);
+  const top10=[...reqs].sort((a,b)=>getScore2(b)-getScore2(a)).slice(0,10);
+
+  const selectedReqs=top10.filter(r=>selectedIds.includes(r.id));
   const toggleReq=id=>setSelected(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
-  const toggleAll=()=>setSelected(selectedIds.length===reqs.length?[]:reqs.map(r=>r.id));
+  const toggleAll=()=>setSelected(selectedIds.length===top10.length?[]:top10.map(r=>r.id));
+  const setCtx=(id,val)=>setReqContexts(p=>({...p,[id]:val}));
 
   const doGenerate=async()=>{
     if(!selectedIds.length)return;
     setGenerating(true);setGenError("");
+    // Translate per-req contexts then attach
+    const reqsWithCtx=await Promise.all(selectedReqs.map(async r=>{
+      const ctx=reqContexts[r.id]||"";
+      if(!ctx.trim())return r;
+      try{const t=await gs.translate({additionalContext:ctx});return {...r,additionalContext:t.additionalContext||ctx};}catch{return {...r,additionalContext:ctx};}
+    }));
     try{
-      const data=await gs.generateEpics(selectedReqs,additionalContext);
+      const data=await gs.generateEpics(reqsWithCtx,"");
       if(!data.ok||!Array.isArray(data.epics))throw new Error(data.error||"Unexpected response");
       setEpics(data.epics.map((e,i)=>({...e,id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(id=>String(id))})));
       setStep("review");
@@ -626,38 +666,24 @@ function EngineeringTab({reqs}){
 
   const parseJson=()=>{
     setJsonError("");
-    try{
-      const parsed=JSON.parse(jsonInput.trim().replace(/```json|```/g,"").trim());
-      if(!Array.isArray(parsed))throw new Error("Expected a JSON array");
-      setEpics(parsed.map((e,i)=>({...e,id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(id=>String(id))})));
-      setStep("review");
-    }catch(err){setJsonError("Invalid JSON: "+err.message);}
+    try{const parsed=JSON.parse(jsonInput.trim().replace(/```json|```/g,"").trim());if(!Array.isArray(parsed))throw new Error("Expected a JSON array");setEpics(parsed.map((e,i)=>({...e,id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(id=>String(id))})));setStep("review");}
+    catch(err){setJsonError("Invalid JSON: "+err.message);}
   };
-
   const updateEpic=(idx,patch)=>setEpics(p=>p.map((e,i)=>i===idx?{...e,...patch}:e));
   const updateTicket=(eIdx,tIdx,patch)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.map((t,j)=>j===tIdx?{...t,...patch}:t)}:e));
   const removeTicket=(eIdx,tIdx)=>setEpics(p=>p.map((e,i)=>i===eIdx?{...e,tickets:e.tickets.filter((_,j)=>j!==tIdx)}:e));
   const approvedEpics=epics.filter(e=>e.approved);
 
-  const [pushResult, setPushResult] = useState(null);
-
   const pushToJira=async()=>{
-    if(!approvedEpics.length)return;
-    setStep("pushing");
-    const result = await gs.jira(approvedEpics);
-    setPushResult(result);
-    if (result?.ok) {
-      const ids = approvedEpics.flatMap(e => e.reqIds || []);
-      setPushedReqIds(prev => [...new Set([...prev, ...ids])]);
-    }
+    if(!approvedEpics.length)return;setStep("pushing");
+    const result=await gs.jira(approvedEpics);setPushResult(result);
+    if(result?.ok){const ids=approvedEpics.flatMap(e=>e.reqIds||[]);setPushedReqIds(prev=>[...new Set([...prev,...ids])]);}
     setStep("done");
   };
 
   if(step==="done")return(<div className="space-y-4">
-    {pushResult?.ok
-      ?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys?.join(", ")}</strong></p></div>
-      :<div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">⚠️</p><p className="text-xl font-black text-rose-700">Something went wrong</p><p className="text-xs text-rose-500 font-mono">{pushResult?.error||"Unknown error"}</p></div>
-    }
+    {pushResult?.ok?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys?.join(", ")}</strong></p></div>
+    :<div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">⚠️</p><p className="text-xl font-black text-rose-700">Something went wrong</p><p className="text-xs text-rose-500 font-mono">{pushResult?.error||"Unknown error"}</p></div>}
     <button onClick={()=>{setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);}} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
   </div>);
 
@@ -665,11 +691,9 @@ function EngineeringTab({reqs}){
 
   if(step==="paste")return(<div className="flex gap-4 items-start">
     <div className="flex-1 min-w-0 space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Manual fallback — paste JSON</p><p className="text-xs text-gray-400">Use this if automatic generation failed.</p></div><button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
-      <div><label className="text-xs font-bold text-gray-500 block mb-2">Paste Claude's JSON response here</label>
-        <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400 bg-rose-50":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  { "title": "...", ... }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
-        {jsonError&&<p className="text-xs text-rose-600 mt-1">{jsonError}</p>}
-      </div>
+      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Manual fallback — paste JSON</p></div><button onClick={()=>setStep("select")} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
+      <textarea className={`w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 ${jsonError?"border-rose-400":"border-gray-200 focus:border-indigo-400"}`} placeholder={'[\n  { "title": "...", ... }\n]'} value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setJsonError("");}}/>
+      {jsonError&&<p className="text-xs text-rose-600">{jsonError}</p>}
       <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40">Review Epics →</button>
     </div>
     <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
@@ -688,7 +712,7 @@ function EngineeringTab({reqs}){
           <div className="p-4 space-y-3">
             <div><label className="text-xs font-bold text-gray-500 block mb-1">Title</label><input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title||""} onChange={e=>updateEpic(eIdx,{title:e.target.value})}/></div>
             <div><label className="text-xs font-bold text-gray-500 block mb-1">Description</label><textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description||""} onChange={e=>updateEpic(eIdx,{description:e.target.value})}/></div>
-            {epic.openQuestions?.length>0&&(<div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1"><p className="text-xs font-bold text-amber-700">❓ Open questions before dev starts</p>{epic.openQuestions.map((q,qi)=><p key={qi} className="text-xs text-amber-800 flex gap-1.5"><span>·</span>{q}</p>)}</div>)}
+            {epic.openQuestions?.length>0&&(<div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1"><p className="text-xs font-bold text-amber-700">❓ Open questions</p>{epic.openQuestions.map((q,qi)=><p key={qi} className="text-xs text-amber-800 flex gap-1.5"><span>·</span>{q}</p>)}</div>)}
             {epicReqs.length>0&&<div className="space-y-1"><p className="text-xs font-bold text-gray-400">Linked requirements</p>{epicReqs.map(r=><div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>)}</div>}
             {epic.tickets?.length>0&&(<div className="space-y-2 pt-1 border-t"><p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
               {epic.tickets.map((t,tIdx)=>(<div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
@@ -709,49 +733,67 @@ function EngineeringTab({reqs}){
     <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
   </div>);
 
+  // Select step
   return(<div className="flex gap-4 items-start">
     <div className="flex-1 min-w-0 space-y-4">
-      <div className="bg-white rounded-xl border p-4"><p className="text-sm font-bold text-gray-800">Step 1 — Select Requirements</p><p className="text-xs text-gray-500 mt-0.5">Pick requirements, add context, then generate epics & tickets automatically.</p></div>
-      <div className="bg-white rounded-xl border p-4 space-y-3">
-        <div className="flex items-center gap-2"><label className="text-sm font-bold text-gray-800">Additional context</label><span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">optional but recommended</span></div>
-        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 space-y-2">
-          <p className="text-xs font-bold text-indigo-700">💡 Consider answering these before generating:</p>
-          {[
-            {q:"🏗️ Architecture decisions",hint:"Platform consolidations or migrations decided today?"},
-            {q:"🚫 Out of scope",hint:"What are we explicitly NOT building in this sprint?"},
-            {q:"⚡ Quick wins first",hint:"Any requirements that should become hotfixes?"},
-            {q:"🔗 Dependencies",hint:"Requirements that must be done before others? Cross-team blockers?"},
-            {q:"🤖 AI automation priority",hint:"Which steps are highest priority for full automation?"},
-            {q:"👥 Who owns what",hint:"Any epics pre-assigned to specific engineers?"},
-          ].map((item,i)=><div key={i} className="flex gap-2 items-start"><span className="text-xs font-bold text-indigo-600 flex-shrink-0 w-36">{item.q}</span><span className="text-xs text-indigo-500">{item.hint}</span></div>)}
-        </div>
-        <textarea className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300" rows={4} value={additionalContext} onChange={e=>setAdditionalContext(e.target.value)} placeholder="e.g. Dojo will be sunset in Q3 — all new script flows go into Ad Studio. Quick Editor copy changes are a hotfix for next week…"/>
+      <div className="bg-white rounded-xl border p-4 space-y-1">
+        <p className="text-sm font-bold text-gray-800">⚙️ Engineering — Top 10 requirements</p>
+        <p className="text-xs text-gray-500">Ranked by votes + self-score. Select what to generate, add per-requirement context if needed.</p>
       </div>
-      {reqs.length===0?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>:<>
-        <div className="bg-white rounded-xl border p-3 flex items-center justify-between"><button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===reqs.length?"Deselect all":"Select all"}</button><span className="text-xs text-gray-400">{selectedIds.length} of {reqs.length} selected</span></div>
-        {Object.entries(byCluster).map(([cluster,clReqs])=>(
-          <div key={cluster} className="bg-white rounded-xl border shadow-sm overflow-hidden">
-            <div className="bg-slate-700 px-4 py-2.5 flex items-center justify-between"><span className="text-xs font-bold text-white">🗂️ {cluster}</span><span className="text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full">{clReqs.length}</span></div>
-            <div className="divide-y">{clReqs.map(r=>{const tc=teamColor(r.team);const sel=selectedIds.includes(r.id);const score=getScore(r);return(
-              <div key={r.id} onClick={()=>toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel?"bg-indigo-50":"hover:bg-gray-50"}`}>
+
+      {top10.length===0
+        ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No voted requirements yet. Complete voting first.</p></div>
+        :<>
+          <div className="bg-white rounded-xl border p-3 flex items-center justify-between">
+            <button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===top10.length?"Deselect all":"Select all"}</button>
+            <span className="text-xs text-gray-400">{selectedIds.length} of {top10.length} selected</span>
+          </div>
+
+          {top10.map((r,idx)=>{
+            const tc=teamColor(r.team);const sel=selectedIds.includes(r.id);const score=getScore(r);const votes2=getTotalVotes(r.id);
+            const isExpanded=expandedReq===r.id;const isPushed=pushedReqIds.includes(String(r.id));
+            const bucket=autoBucket(score);
+            return(<div key={r.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${sel?"border-indigo-200":""} ${isPushed?"border-l-4 border-l-emerald-400":""}`}>
+              <div onClick={()=>toggleReq(r.id)} className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-all ${sel?"bg-indigo-50":"hover:bg-gray-50"}`}>
                 <div className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${sel?"bg-indigo-600 border-indigo-600":"border-gray-300"}`}>{sel&&<span className="text-white text-xs">✓</span>}</div>
                 <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p>
-                  <div className="flex flex-wrap gap-1.5 mt-1"><Badge cls={tc.badge}>{r.team}</Badge>{r.issueType&&<Badge cls={typeBadge(r.issueType)}>{r.issueType}</Badge>}{r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}{score>0&&<span className="text-xs text-indigo-500 font-bold">{score}pts</span>}{pushedReqIds.includes(String(r.id))&&<Badge cls="bg-emerald-100 text-emerald-700">✅ In Jira</Badge>}</div>
+                  <div className="flex items-center gap-2"><span className="text-xs font-black text-gray-400">#{idx+1}</span><p className={`text-sm font-semibold ${sel?"text-indigo-800":"text-gray-800"}`}>{r.problem}</p></div>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    <Badge cls={tc.badge}>{r.team}</Badge>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${buckBadge(bucket)}`}>{bucket}</span>
+                    {score>0&&<span className="text-xs text-indigo-500 font-bold">⭐{score}</span>}
+                    {votes2>0&&<span className="text-xs text-emerald-600 font-bold">🗳️{votes2}</span>}
+                    {isPushed&&<Badge cls="bg-emerald-100 text-emerald-700">✅ In Jira</Badge>}
+                  </div>
                   {r.definition&&<p className="text-xs text-emerald-600 mt-1 italic">🎯 {r.definition?.slice(0,80)}{r.definition?.length>80?"…":""}</p>}
                 </div>
+                <button onClick={e=>{e.stopPropagation();setExpandedReq(isExpanded?null:r.id);}} className="text-gray-300 hover:text-gray-500 text-lg flex-shrink-0">{isExpanded?"▲":"▼"}</button>
               </div>
-            );})}</div>
+
+              {isExpanded&&<div className="border-t bg-slate-50 p-4 space-y-3">
+                {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
+                {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
+                <div className="grid grid-cols-2 gap-3">
+                  <div><p className="text-xs font-bold text-gray-600 mb-1">🗂️ Cluster</p><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={()=>{}} placeholder="Select cluster…"/></div>
+                  <div><p className="text-xs font-bold text-gray-600 mb-1">🏷️ Category</p><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={()=>{}} placeholder="Select category…"/></div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-600 block mb-1">💬 Additional context for this requirement <span className="text-gray-400 font-normal">(optional — gets translated to English)</span></label>
+                  <textarea className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white" rows={3} placeholder="e.g. This is blocked by the Auth Service refactor in Q2. Prioritize after that ships." value={reqContexts[r.id]||""} onChange={e=>setCtx(r.id,e.target.value)}/>
+                </div>
+              </div>}
+            </div>);
+          })}
+
+          <div className="sticky bottom-4 pt-2 space-y-2">
+            {genError&&<div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center">{genError} — <button onClick={()=>setStep("paste")} className="underline font-bold">paste manually instead</button></div>}
+            <button onClick={doGenerate} disabled={!selectedIds.length||generating} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
+              {generating?<span className="flex items-center justify-center gap-2"><span className="animate-spin inline-block">⚙️</span>Generating epics & tickets… (~20s)</span>:`✨ Generate epics & tickets from ${selectedIds.length} requirement${selectedIds.length!==1?"s":""}`}
+            </button>
+            {selectedIds.length>0&&!generating&&<p className="text-center text-xs text-gray-400">Powered by Claude via Apps Script</p>}
           </div>
-        ))}
-        <div className="sticky bottom-4 pt-2 space-y-2">
-          {genError&&<div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center">{genError} — <button onClick={()=>setStep("paste")} className="underline font-bold">paste manually instead</button></div>}
-          <button onClick={doGenerate} disabled={!selectedIds.length||generating} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
-            {generating?<span className="flex items-center justify-center gap-2"><span className="animate-spin inline-block">⚙️</span>Generating epics & tickets… (~20s)</span>:`✨ Generate epics & tickets from ${selectedIds.length} requirement${selectedIds.length!==1?"s":""}`}
-          </button>
-          {selectedIds.length>0&&!generating&&<p className="text-center text-xs text-gray-400">Powered by Claude via Apps Script — no copy-paste needed</p>}
-        </div>
-      </>}
+        </>
+      }
     </div>
     <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
   </div>);
@@ -771,13 +813,14 @@ function App(){
   useEffect(()=>{if(!user)return;const iv=setInterval(loadAll,30000);return()=>clearInterval(iv);},[user]);
 
   const withSync=async fn=>{setSync("syncing");try{await fn();setSync("ok");setTimeout(()=>setSync("idle"),2500);}catch{setSync("error");setTimeout(()=>setSync("idle"),4000);}};
-
   const addReq=async req=>{setSync("syncing");try{await gs.upsert("requirements",req);await loadAll();setSync("ok");setTimeout(()=>setSync("idle"),2500);}catch{setSync("error");setTimeout(()=>setSync("idle"),4000);}};
   const updateReq=async(id,patch)=>{const updated=reqs.map(r=>r.id===id?{...r,...patch}:r);setReqs(updated);await withSync(()=>gs.upsert("requirements",updated.find(r=>r.id===id)));};
   const deleteReq=async id=>{setReqs(p=>p.filter(r=>r.id!==id));await withSync(()=>gs.del("requirements",id));};
 
+  // voter ID is per-person, not per-team
+  const voterId = user => (user.name||user.team).toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
   const castVote=async(reqId,pts)=>{
-    const vid=user.team.toLowerCase().replace(/\s+/g,"-");const sid=String(reqId);
+    const vid=voterId(user);const sid=String(reqId);
     setVotes(prev=>{const myVotes={...(prev[vid]||{})};if(pts===0){delete myVotes[sid];}else{myVotes[sid]=pts;}const next={...prev,[vid]:myVotes};gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:myVotes});return next;});
   };
   const closeVoting=async()=>{setVotingClosed(true);await gs.upsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});};
@@ -785,7 +828,13 @@ function App(){
     if(!window.confirm("Reset all votes? This cannot be undone."))return;
     setVotes({});setVotingClosed(false);
     await gs.del("scores_upvotes","__voting_closed__");
-    for(const t of TEAMS){await gs.upsert("scores_upvotes",{id:t.toLowerCase().replace(/\s+/g,"-"),scores:{},upvotes:{}});}
+    // clear every known person
+    for(const members of Object.values(TEAM_MEMBERS)){
+      for(const name of members){
+        const vid=name.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
+        await gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:{}});
+      }
+    }
   };
 
   if(loading)return(<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}><div style={{fontSize:"2.5rem"}}>⚡</div><p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p></div>);
@@ -814,14 +863,13 @@ function App(){
     <div className="flex border-b bg-white px-4 overflow-x-auto">
       {tabs.map((t,i)=><button key={i} onClick={()=>setTab(i)} className={`px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>{t}</button>)}
     </div>
-    <div className={`${day===2&&tab===3?"px-5 py-5":"max-w-3xl mx-auto p-5"} space-y-4`}>
+    <div className={`${day===2&&tab===2?"px-5 py-5":"max-w-3xl mx-auto p-5"} space-y-4`}>
       {day===1&&<TeamContextPanel team={user.team}/>}
       {day===1&&tab===0&&<SubmitTab user={user} onSave={addReq} syncStatus={syncStatus}/>}
-      {day===1&&tab===1&&<RequirementsTab reqs={reqs} user={user} onUpdate={updateReq} onDelete={deleteReq}/>}
-      {day===2&&tab===0&&<ReadOutTab reqs={reqs}/>}
-      {day===2&&tab===1&&<SynthesisTab reqs={reqs} onUpdateReq={updateReq}/>}
-      {day===2&&tab===2&&<VotingTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting} onResetVoting={resetVoting}/>}
-      {day===2&&tab===3&&<EngineeringTab reqs={reqs}/>}
+      {day===1&&tab===1&&<RequirementsTab reqs={reqs} user={user} onUpdate={updateReq} onDelete={deleteReq} syncStatus={syncStatus}/>}
+      {day===2&&tab===0&&<ReadOutTab reqs={reqs} onUpdate={updateReq}/>}
+      {day===2&&tab===1&&<SynthesisVoteTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting} onResetVoting={resetVoting} onUpdateReq={updateReq}/>}
+      {day===2&&tab===2&&<EngineeringTab reqs={reqs} votes={votes} votingClosed={votingClosed}/>}
     </div>
   </div>);
 }
