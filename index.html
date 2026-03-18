@@ -124,13 +124,7 @@ var FIELD_TOOLTIPS = {
   agentPotential: {title: "Agent Potential", what: "The level of AI automation that would make sense.", why: "Helps Engineering design the right solution.", tips: ["Assisted = human decides, AI drafts","Fully automated = AI handles end-to-end","Orchestrated = agent coordinates steps","Not suitable = requires human judgment"]},
   definition: {title: "Definition of Solved", what: "What day-to-day looks like if this no longer existed.", why: "This becomes the acceptance criteria for the epic.", tips: ["Write in present tense","Focus on what stops happening","Avoid implementation details"], bad: "A system that validates the brief automatically", good: "The brief always arrives at editing with the required format. The editor never has to ask or guess."}
 };
-var CAT_COLORS = {
-  "Workflow Optimization": "bg-green-100 text-green-800 border border-green-300",
-  "Agent Enablement": "bg-purple-100 text-purple-800 border border-purple-300",
-  "Structural Re-Architecture": "bg-red-100 text-red-800 border border-red-300",
-  "Other": "bg-gray-100 text-gray-600 border border-gray-300"
-};
-function catBadgeCls(c) { return CAT_COLORS[c] || "bg-indigo-50 text-indigo-700 border border-indigo-200"; }
+var BEST_PRACTICES = {
   epics: [
     {icon: "🎯", title: "One clear outcome", desc: "Each epic solves ONE problem. If you need 'and', split it."},
     {icon: "📏", title: "Shippable in a sprint", desc: "If it takes more than 2 weeks, break it down further."},
@@ -575,7 +569,7 @@ function RequirementsTab(props) {
                     React.createElement(Badge,{cls:tc.badge},r.team),
                     r.submittedBy && React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),
                     r.frequency && React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),
-                    cat && React.createElement("span", {className: "text-xs px-2 py-0.5 rounded-full font-semibold " + catBadgeCls(cat)}, "🏷️ " + cat),
+                    cat && React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),
                     score>0 && React.createElement(Badge,{cls:"bg-slate-100 text-slate-700"},"⭐ "+score+"/20"),
                     r.easyWin && React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win")
                   )
@@ -686,28 +680,8 @@ function ReadOutTab(props) {
             React.createElement("div",{className:"flex flex-wrap gap-2"},
               current.frequency && React.createElement("div",{className:"flex gap-1.5 items-center"},React.createElement("span",{className:"text-lg"},FREQ_META[current.frequency]&&FREQ_META[current.frequency].emoji),React.createElement("span",{className:"text-sm font-semibold text-gray-600"},current.frequency)),
               current.agentPotential && React.createElement(Badge,{cls:agentBadge(current.agentPotential)},current.agentPotential),
-              current.pipelineStage && React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},current.pipelineStage)
-            ),
-            // Category selector
-            React.createElement("div",{className:"bg-white border-2 rounded-xl p-3 space-y-2"},
-              React.createElement("div",{className:"flex items-center justify-between"},
-                React.createElement("p",{className:"text-xs font-bold text-gray-600 uppercase tracking-wide"},"🏷️ Category"),
-                getCategory(current) && React.createElement("span",{className:"text-xs px-2.5 py-1 rounded-full font-semibold " + catBadgeCls(getCategory(current))},getCategory(current))
-              ),
-              React.createElement("div",{className:"flex flex-wrap gap-1.5"},
-                BASE_CATEGORIES.map(function(cat){
-                  var isActive = getCategory(current) === cat;
-                  return React.createElement("button",{
-                    key: cat,
-                    onClick: function(){props.onUpdate(current.id, {category: cat, recommended_category: cat});},
-                    className: "text-xs px-3 py-1.5 rounded-xl border-2 font-semibold transition-all " + (isActive ? catBadgeCls(cat) + " border-2" : "border-gray-200 text-gray-500 hover:border-gray-300")
-                  }, cat);
-                }),
-                React.createElement("button",{
-                  onClick: function(){props.onUpdate(current.id, {category: "", recommended_category: ""});},
-                  className: "text-xs px-3 py-1.5 rounded-xl border-2 font-semibold border-gray-100 text-gray-300 hover:border-rose-200 hover:text-rose-400 transition-all"
-                }, "✕ Clear")
-              )
+              current.pipelineStage && React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},current.pipelineStage),
+              getCategory(current) && React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},getCategory(current))
             ),
             current.roleplayExample && React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-sm text-amber-900 leading-relaxed"},current.roleplayExample)),
             current.workaround && React.createElement("div",{className:"bg-slate-50 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-sm text-slate-700"},current.workaround)),
