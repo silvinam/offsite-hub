@@ -476,8 +476,14 @@ function RequirementsTab(props) {
                   React.createElement(ScorePicker,{label:"Strategic leverage",emoji:"🚀",color:"indigo",value:r.leverageScore||0,onChange:function(v){onUpdate(r.id,{leverageScore:v});},desc:"Does this unlock scale or AI?"})
                 ),
                 score>0&&React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Total: "+score+"/20 — "+autoBucket(score))),
-                React.createElement("div",{className:"flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all "+(ew?"bg-green-50 border-green-400":"border-gray-200 hover:border-green-300"),onClick:function(){onUpdate(r.id,{easyWin:!ew});}},
-                  React.createElement("div",{className:"w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(ew?"bg-green-500 border-green-500":"border-gray-300")},ew&&React.createElement("span",{className:"text-white text-xs font-bold"},"✓")),
+                React.createElement("button",{
+                  type:"button",
+                  className:"w-full flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all text-left "+(ew?"bg-green-50 border-green-400":"border-gray-200 hover:border-green-300"),
+                  onClick:function(e){e.preventDefault();e.stopPropagation();onUpdate(r.id,{easyWin:!ew});}
+                },
+                  React.createElement("div",{className:"w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(ew?"bg-green-500 border-green-500":"border-gray-300 bg-white")},
+                    ew&&React.createElement("span",{className:"text-white text-xs font-bold"},"✓")
+                  ),
                   React.createElement("div",{className:"flex-1"},
                     React.createElement("div",{className:"flex items-center gap-1.5"},React.createElement("p",{className:"text-sm font-bold "+(ew?"text-green-700":"text-gray-700")},"⚡ Easy win"),React.createElement(EasyWinTooltip,null)),
                     React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Mark if scope is clear and no deep analysis needed")
@@ -803,10 +809,6 @@ function App() {
   function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function updateReq(id,patch){
-    // Serialize easyWin as 1/0 so the sheet stores a number, not "true"/"false" string
-    if (patch.hasOwnProperty("easyWin")) {
-      patch = Object.assign({}, patch, {easyWin: patch.easyWin ? 1 : 0});
-    }
     var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});
     setReqs(updated);
     withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});
