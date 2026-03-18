@@ -12,633 +12,907 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useRef } = React;
+var useState = React.useState;
+var useEffect = React.useEffect;
+var useRef = React.useRef;
 
-const GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
-const gs = {
-  get: async function(s) { try { return await (await fetch(GS_URL+"?sheet="+encodeURIComponent(s))).json(); } catch(e) { return []; } },
-  upsert: async function(s,d) { try { await fetch(GS_URL+"?action=upsert&sheet="+encodeURIComponent(s)+"&data="+encodeURIComponent(JSON.stringify(d))); } catch(e) {} },
-  del: async function(s,id) { try { await fetch(GS_URL+"?action=delete&sheet="+encodeURIComponent(s)+"&data="+encodeURIComponent(JSON.stringify({id:id}))); } catch(e) {} },
-  translate: async function(fields) {
-    var entries = Object.entries(fields).filter(function(e){return e[1]&&typeof e[1]==="string"&&e[1].trim();});
-    if(!entries.length) return fields;
-    try {
-      var r = await fetch(GS_URL+"?action=translate&data="+encodeURIComponent(JSON.stringify(Object.fromEntries(entries))));
-      var j = await r.json();
-      return Object.assign({},fields,j);
-    } catch(e) { return fields; }
+var GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
+
+var gs = {
+  get: function(s) {
+    return fetch(GS_URL + "?sheet=" + encodeURIComponent(s))
+      .then(function(r) { return r.json(); })
+      .catch(function() { return []; });
   },
-  jira: async function(epics) { try { return await (await fetch(GS_URL+"?action=jira&data="+encodeURIComponent(JSON.stringify(epics)))).json(); } catch(e) { return {ok:false,error:String(e)}; } },
-  generateEpics: async function(requirements, additionalContext) {
-    var res = await fetch(GS_URL+"?action=generate_epics&data="+encodeURIComponent(JSON.stringify({requirements:requirements,additionalContext:additionalContext})));
-    return await res.json();
+  upsert: function(s, d) {
+    return fetch(GS_URL + "?action=upsert&sheet=" + encodeURIComponent(s) + "&data=" + encodeURIComponent(JSON.stringify(d)))
+      .catch(function() {});
   },
+  del: function(s, id) {
+    return fetch(GS_URL + "?action=delete&sheet=" + encodeURIComponent(s) + "&data=" + encodeURIComponent(JSON.stringify({id: id})))
+      .catch(function() {});
+  },
+  translate: function(fields) {
+    var entries = Object.entries(fields).filter(function(e) { return e[1] && typeof e[1] === "string" && e[1].trim(); });
+    if (!entries.length) return Promise.resolve(fields);
+    return fetch(GS_URL + "?action=translate&data=" + encodeURIComponent(JSON.stringify(Object.fromEntries(entries))))
+      .then(function(r) { return r.json(); })
+      .then(function(j) { return Object.assign({}, fields, j); })
+      .catch(function() { return fields; });
+  },
+  jira: function(epics) {
+    return fetch(GS_URL + "?action=jira&data=" + encodeURIComponent(JSON.stringify(epics)))
+      .then(function(r) { return r.json(); })
+      .catch(function(e) { return {ok: false, error: String(e)}; });
+  },
+  generateEpics: function(requirements, ctx) {
+    return fetch(GS_URL + "?action=generate_epics&data=" + encodeURIComponent(JSON.stringify({requirements: requirements, additionalContext: ctx})))
+      .then(function(r) { return r.json(); });
+  }
 };
 
-async function loadVoting() {
-  var rows = await gs.get("scores_upvotes");
-  var votes = {}, closed = false;
-  rows.forEach(function(r) {
-    if(r.id==="__voting_closed__"){closed=!!r.scores;return;}
-    if(r.upvotes&&Object.keys(r.upvotes).length) votes[r.id]=r.upvotes;
+function loadVoting() {
+  return gs.get("scores_upvotes").then(function(rows) {
+    var votes = {}, closed = false;
+    rows.forEach(function(r) {
+      if (r.id === "__voting_closed__") { closed = !!r.scores; return; }
+      if (r.upvotes && Object.keys(r.upvotes).length) votes[r.id] = r.upvotes;
+    });
+    return {votes: votes, closed: closed};
   });
-  return {votes:votes,closed:closed};
 }
 
-var PIPELINE_STAGES = ["Onboarding / Brief","Creative Strategy / Strategy Sheet","Script Generation","Footage Production","Editing","Review","Delivery","Tweaking – Quick Editor","Tweaking – Manual Revision Request","Cross-stage"];
+// ── Constants ────────────────────────────────────────────────
+var PIPELINE_STAGES = ["Onboarding / Brief","Creative Strategy / Strategy Sheet","Script Generation","Footage Production","Editing","Review","Delivery","Tweaking - Quick Editor","Tweaking - Manual Revision Request","Cross-stage"];
 var STAKEHOLDERS = ["Customer","Creative","Editors","Footage production","PMs","Engineering"];
 var CONSEQUENCES = ["Time loss","Quality degradation","Scale limitation","Client churn risk","Internal burn"];
 var FREQUENCIES = ["Always","Often","Sometimes","Rare but critical"];
-var FREQ_META = {Always:{emoji:"🔴",desc:"Every project"},Often:{emoji:"🟠",desc:"Most projects"},Sometimes:{emoji:"🟡",desc:"Edge cases"},"Rare but critical":{emoji:"⚪",desc:"Low freq, high impact"}};
+var FREQ_META = {
+  "Always": {emoji: "🔴", desc: "Every project"},
+  "Often": {emoji: "🟠", desc: "Most projects"},
+  "Sometimes": {emoji: "🟡", desc: "Edge cases"},
+  "Rare but critical": {emoji: "⚪", desc: "Low freq, high impact"}
+};
 var AGENT_POTENTIALS = ["Assisted by AI","Fully automated","Orchestrated by an agent","Not suitable for AI"];
 var AGENT_META = {
-  "Assisted by AI":{emoji:"🤝",desc:"Human makes the call, AI drafts or suggests."},
-  "Fully automated":{emoji:"⚡",desc:"No human needed. AI runs end-to-end."},
-  "Orchestrated by an agent":{emoji:"🕸️",desc:"Agent coordinates multiple steps autonomously."},
-  "Not suitable for AI":{emoji:"🚫",desc:"Requires human judgment or creative intuition."}
+  "Assisted by AI": {emoji: "🤝", desc: "Human makes the call, AI drafts or suggests."},
+  "Fully automated": {emoji: "⚡", desc: "No human needed. AI runs end-to-end."},
+  "Orchestrated by an agent": {emoji: "🕸️", desc: "Agent coordinates multiple steps autonomously."},
+  "Not suitable for AI": {emoji: "🚫", desc: "Requires human judgment or creative intuition."}
 };
 var BASE_CLUSTERS = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered","Other"];
 var BASE_CATEGORIES = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Other"];
-var CAT_META = {"Workflow Optimization":{desc:"Incremental process improvement"},"Agent Enablement":{desc:"Requires data & structure redesign"},"Structural Re-Architecture":{desc:"Platform-level bet"}};
 var BUCKETS = ["Must-fix","Scale enabler","Strategic bet"];
 var TEAMS = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
-var TABS_D1 = ["➕ Submit","📋 Requirements"];
-var TABS_D2 = ["🎤 Read-Out","🗳️ Synthesis & Vote","⚙️ Engineering"];
+var TABS_D1 = ["Submit","Requirements"];
+var TABS_D2 = ["Read-Out","Synthesis & Vote","Engineering"];
 var TEAM_MEMBERS = {
-  "The Client":["Alejandro Martearena","Pablo Emir Rocha","John"],
-  "Editing 1":["José Castro Madero","Emi Prandi","Emi Fant","Johnny Bazan","Caro Glatstein"],
-  "Editing 2":["Lucas Chiacchio","Leo Spataro","Toote","Gaston Silva","Dara Roldán"],
-  "Footage Production":["Milton Rey Chapur","Nico Hulej","Tomás Ernesto Seoane","Nico Campos"],
-  "PM":["Lau Basanta","Vicky Magallanes","Mati Tasca","Luciana Biglia"],
-  "Creative Strategy":["Sofía Córdoba Salazar","María Abril Portillo","Andrés Matías Pardini","Ignacio Baldoncini","Marce Jaeggi"]
+  "The Client": ["Alejandro Martearena","Pablo Emir Rocha","John"],
+  "Editing 1": ["José Castro Madero","Emi Prandi","Emi Fant","Johnny Bazan","Caro Glatstein"],
+  "Editing 2": ["Lucas Chiacchio","Leo Spataro","Toote","Gaston Silva","Dara Roldán"],
+  "Footage Production": ["Milton Rey Chapur","Nico Hulej","Tomás Ernesto Seoane","Nico Campos"],
+  "PM": ["Lau Basanta","Vicky Magallanes","Mati Tasca","Luciana Biglia"],
+  "Creative Strategy": ["Sofía Córdoba Salazar","María Abril Portillo","Andrés Matías Pardini","Ignacio Baldoncini","Marce Jaeggi"]
 };
-var ALL_MEMBERS = Object.entries(TEAM_MEMBERS).flatMap(function(e){return e[1].map(function(n){return {name:n,team:e[0]};});});
+var ALL_MEMBERS = Object.entries(TEAM_MEMBERS).reduce(function(acc, e) {
+  return acc.concat(e[1].map(function(n) { return {name: n, team: e[0]}; }));
+}, []);
 var TEAM_CONTEXT = {
-  "The Client":{role:"Mid-market brand",emoji:"🏢",responsibilities:["Pre-research the brand","Complete onboarding","Give footage & tweak brief","Respond as a real client","Approve ads"],focus:["Missing inputs","Ambiguity","Manual workarounds","Onboarding friction"]},
-  "Editing 1":{role:"Asset production",emoji:"🎬",responsibilities:["Generate ads","Generate footage","Request clarifications","Iterate on cuts","Prepare final delivery"],focus:["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
-  "Editing 2":{role:"Asset production",emoji:"🎬",responsibilities:["Generate ads","Generate footage","Request clarifications","Iterate on cuts","Prepare final delivery"],focus:["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
-  "Footage Production":{role:"Asset production",emoji:"🎥",responsibilities:["Generate footage","Request clarifications","Iterate","Prepare final delivery"],focus:["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
-  "PM":{role:"Project management",emoji:"📋",responsibilities:["Track status","Coordinate handoffs","Enforce SLAs","Ensure final delivery"],focus:["Manual tracking","Visibility gaps","Ownership confusion","Recovery paths"]},
-  "Creative Strategy":{role:"Strategy + scripting",emoji:"✍️",responsibilities:["Consolidate client info","Define creative strategy","Generate scripts","QA output","Manage revisions"],focus:["Decision logic in heads","Manual repetitive reasoning","Script iteration patterns","AI leverage points"]}
-};
-  var FIELD_TOOLTIPS = {
-  problem:{title:"What broke, slowed down, or is missing?",what:"One sentence describing the symptom — a bug, a bottleneck, or a missing capability.",why:"This becomes the title of the requirement.",tips:["For bugs: describe what broke","For new features: describe the gap","Avoid 'we should' — describe the current reality"],bad:"The brief process is inefficient",good:"Editors don't know the required video format until after they've finished the cut."},
-  roleplay:{title:"Roleplay Evidence / Additional Context",what:"A concrete blow-by-blow of what happened — who did what, in what order, and what was the consequence.",why:"This is the evidence that makes the requirement real and defensible.",tips:["Name the roles involved","Include the exact sequence of events","End with the consequence and time cost"],bad:"There was confusion about the format",good:"PM sent Slack asking about aspect ratio. No response for 20 min. Editor assumed 9:16, finished cut. Client replied asking for 16:9 — 45 min rework."},
-  frequency:{title:"How Often Does This Happen?",what:"Your honest estimate of how often this comes up in real production.",why:"Frequency is one of the biggest drivers of prioritization — a small pain that happens every project outweighs a big pain that happens once a year.",tips:["Always = virtually every project","Often = more than half of projects","Sometimes = occasional edge cases","Rare but critical = low frequency, very high severity when it hits"]},
-  pipelineStage:{title:"Pipeline Stage",what:"The stage where this problem first surfaces in the production pipeline.",why:"Helps the team cluster requirements by theme and identify which parts of the workflow need the most attention.",tips:["Pick the stage where the problem first surfaces","If it spans multiple stages, choose Cross-stage"]},
-  stakeholders:{title:"Who Feels the Pain?",what:"Every role that is negatively affected when this problem occurs.",why:"Problems that impact multiple stakeholders are more urgent — they represent compounded cost across the team.",      tips:["Customer = brand / client side","Creative = strategy and scripting","Editors = producing and cutting ads","Footage production = footage production team","PMs = coordinating and tracking","Engineering = building and maintaining"]},
-  consequences:{title:"What Does It Actually Cost?",what:"The real downstream impact of leaving this problem unsolved.",why:"This separates 'annoying' from 'existentially dangerous' — it forces the team to be honest about the real cost of inaction.",tips:["Time loss = wasted hours per project","Quality degradation = errors or rework reaching the client","Scale limitation = blocks the team from growing","Client churn risk = may cause a client to leave","Internal burn = team frustration and morale damage"]},
-  workaround:{title:"Current Workaround",what:"What the team does today to compensate for this problem not being solved.",why:"Every workaround is proof the problem is real. It also shows the hidden cost already being paid.",tips:["Be specific about the steps involved","Estimate the time cost per occurrence","If there is no workaround, say so — that makes it more urgent"],bad:"We handle it manually",good:"Editor sends a Slack to PM, waits, sometimes guesses. Roughly 20–45 min lost per project."},
-  agentPotential:{title:"Agent Potential",what:"The level of AI automation that would make sense if this problem were solved.",why:"Helps Engineering think about whether the solution should be a UI fix, an AI-assisted feature, or a fully autonomous agent step.",tips:["Assisted = human decides, AI drafts or suggests","Fully automated = AI handles it end-to-end every time","Orchestrated = an agent coordinates multiple steps or tools","Not suitable = requires human judgment, client relationship, or creative intuition"]},
-  definition:{title:"Definition of Solved",what:"A description of what day-to-day would look like if this problem no longer existed.",why:"This becomes the acceptance criteria for the epic. Without it, there is no way to know when the problem is actually fixed.",tips:["Write in present tense as if the problem is already solved","Focus on what stops happening, not on how it gets fixed","Avoid technical implementation details — describe the outcome"],bad:"A system that validates the brief automatically",good:"The brief always arrives at editing with the required format filled in. The editor never has to ask or guess."}
+  "The Client": {role: "Mid-market brand", emoji: "🏢", responsibilities: ["Pre-research the brand","Complete onboarding","Respond as a real client","Approve ads"], focus: ["Missing inputs","Ambiguity","Manual workarounds","Onboarding friction"]},
+  "Editing 1": {role: "Asset production", emoji: "🎬", responsibilities: ["Generate ads","Request clarifications","Iterate on cuts","Prepare final delivery"], focus: ["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
+  "Editing 2": {role: "Asset production", emoji: "🎬", responsibilities: ["Generate ads","Request clarifications","Iterate on cuts","Prepare final delivery"], focus: ["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
+  "Footage Production": {role: "Asset production", emoji: "🎥", responsibilities: ["Generate footage","Request clarifications","Prepare final delivery"], focus: ["Undefined asset requirements","Approval ambiguity","Versioning chaos","Rework causes"]},
+  "PM": {role: "Project management", emoji: "📋", responsibilities: ["Track status","Coordinate handoffs","Enforce SLAs"], focus: ["Manual tracking","Visibility gaps","Ownership confusion","Scalability blockers"]},
+  "Creative Strategy": {role: "Strategy + scripting", emoji: "✍️", responsibilities: ["Consolidate client info","Define creative strategy","Generate scripts","QA output"], focus: ["Decision logic in heads","Manual repetitive reasoning","Script iteration patterns","AI leverage points"]}
 };
 var TEAM_COLORS = [
-  {bg:"bg-violet-500",light:"bg-violet-50 border-violet-400 text-violet-700",badge:"bg-violet-100 text-violet-800"},
-  {bg:"bg-emerald-500",light:"bg-emerald-50 border-emerald-400 text-emerald-700",badge:"bg-emerald-100 text-emerald-800"},
-  {bg:"bg-rose-500",light:"bg-rose-50 border-rose-400 text-rose-700",badge:"bg-rose-100 text-rose-800"},
-  {bg:"bg-amber-500",light:"bg-amber-50 border-amber-400 text-amber-700",badge:"bg-amber-100 text-amber-800"},
-  {bg:"bg-cyan-500",light:"bg-cyan-50 border-cyan-400 text-cyan-700",badge:"bg-cyan-100 text-cyan-800"},
-  {bg:"bg-pink-500",light:"bg-pink-50 border-pink-400 text-pink-700",badge:"bg-pink-100 text-pink-800"}
+  {bg: "bg-violet-500", light: "bg-violet-50 border-violet-400 text-violet-700", badge: "bg-violet-100 text-violet-800"},
+  {bg: "bg-emerald-500", light: "bg-emerald-50 border-emerald-400 text-emerald-700", badge: "bg-emerald-100 text-emerald-800"},
+  {bg: "bg-rose-500", light: "bg-rose-50 border-rose-400 text-rose-700", badge: "bg-rose-100 text-rose-800"},
+  {bg: "bg-amber-500", light: "bg-amber-50 border-amber-400 text-amber-700", badge: "bg-amber-100 text-amber-800"},
+  {bg: "bg-cyan-500", light: "bg-cyan-50 border-cyan-400 text-cyan-700", badge: "bg-cyan-100 text-cyan-800"},
+  {bg: "bg-pink-500", light: "bg-pink-50 border-pink-400 text-pink-700", badge: "bg-pink-100 text-pink-800"}
 ];
-var BEST_PRACTICES = {
-  epics:[{icon:"🎯",title:"One clear outcome",desc:"Each epic solves ONE problem. If you need 'and', split it."},{icon:"📏",title:"Shippable in a sprint",desc:"If it takes more than 2 weeks, break it down further."},{icon:"❓",title:"Include open questions",desc:"List what needs to be decided before engineering starts."},{icon:"📊",title:"Measurable success",desc:"Define how you'll know it's done."},{icon:"🚫",title:"No implementation details",desc:"Describe the WHAT and WHY, not the HOW."}],
-  tickets:[{icon:"👤",title:"Real role, real goal",desc:"'As a PM' + specific goal + clear benefit."},{icon:"✅",title:"Given/When/Then ACs",desc:"Each AC is testable."},{icon:"🔢",title:"3-5 ACs max",desc:"More than 5 means the ticket is too big. Split it."},{icon:"❓",title:"Surface ambiguity",desc:"Add a 'Questions' field if something is unclear."},{icon:"⚡",title:"Independent & deployable",desc:"Each ticket should be mergeable without blocking others."}]
+var FIELD_TOOLTIPS = {
+  problem: {title: "What broke, slowed down, or is missing?", what: "One sentence describing the symptom.", why: "This becomes the title of the requirement.", tips: ["For bugs: describe what broke","For new features: describe the gap","Avoid 'we should'"], bad: "The brief process is inefficient", good: "Editors don't know the required video format until after they've finished the cut."},
+  roleplay: {title: "Roleplay Evidence / Additional Context", what: "A concrete blow-by-blow of what happened.", why: "This is the evidence that makes the requirement real.", tips: ["Name the roles involved","Include the exact sequence of events","End with the consequence"], bad: "There was confusion about the format", good: "PM sent Slack asking about aspect ratio. No response for 20 min. Editor assumed 9:16. Client replied asking for 16:9 — 45 min rework."},
+  frequency: {title: "How Often Does This Happen?", what: "Your honest estimate of how often this comes up.", why: "Frequency is one of the biggest drivers of prioritization.", tips: ["Always = virtually every project","Often = more than half","Sometimes = occasional","Rare but critical = low freq, high severity"]},
+  pipelineStage: {title: "Pipeline Stage", what: "The stage where this problem first surfaces.", why: "Helps cluster requirements by theme.", tips: ["Pick the stage where it first surfaces","Cross-stage = spans multiple stages"]},
+  stakeholders: {title: "Who Feels the Pain?", what: "Every role negatively affected.", why: "Problems impacting multiple stakeholders are more urgent.", tips: ["Customer = brand/client","Creative = strategy and scripting","Editors = producing and cutting","Footage production = footage team","PMs = coordinating","Engineering = building"]},
+  consequences: {title: "What Does It Actually Cost?", what: "The real downstream impact of leaving this unsolved.", why: "Separates 'annoying' from 'existentially dangerous'.", tips: ["Time loss","Quality degradation","Scale limitation","Client churn risk","Internal burn"]},
+  workaround: {title: "Current Workaround", what: "What the team does today to compensate.", why: "Every workaround is proof the problem is real.", tips: ["Be specific","Estimate the time cost","If no workaround, say so — that makes it more urgent"], bad: "We handle it manually", good: "Editor sends Slack to PM, waits, sometimes guesses. ~20-45 min lost per project."},
+  agentPotential: {title: "Agent Potential", what: "The level of AI automation that would make sense.", why: "Helps Engineering design the right solution.", tips: ["Assisted = human decides, AI drafts","Fully automated = AI handles end-to-end","Orchestrated = agent coordinates steps","Not suitable = requires human judgment"]},
+  definition: {title: "Definition of Solved", what: "What day-to-day looks like if this no longer existed.", why: "This becomes the acceptance criteria for the epic.", tips: ["Write in present tense","Focus on what stops happening","Avoid implementation details"], bad: "A system that validates the brief automatically", good: "The brief always arrives at editing with the required format. The editor never has to ask or guess."}
 };
-var EMPTY_REQ = {problem:"",roleplayExample:"",frequency:"",stakeholders:[],consequences:[],agentPotential:"",workaround:"",definition:"",pipelineStage:"",impactScore:0,frequencyScore:0,riskScore:0,leverageScore:0};
+var BEST_PRACTICES = {
+  epics: [
+    {icon: "🎯", title: "One clear outcome", desc: "Each epic solves ONE problem. If you need 'and', split it."},
+    {icon: "📏", title: "Shippable in a sprint", desc: "If it takes more than 2 weeks, break it down further."},
+    {icon: "❓", title: "Include open questions", desc: "List what needs to be decided before engineering starts."},
+    {icon: "📊", title: "Measurable success", desc: "Define how you'll know it's done."},
+    {icon: "🚫", title: "No implementation details", desc: "Describe the WHAT and WHY, not the HOW."}
+  ],
+  tickets: [
+    {icon: "👤", title: "Real role, real goal", desc: "'As a PM' + specific goal + clear benefit."},
+    {icon: "✅", title: "Given/When/Then ACs", desc: "Each AC is testable."},
+    {icon: "🔢", title: "3-5 ACs max", desc: "More than 5 means the ticket is too big."},
+    {icon: "❓", title: "Surface ambiguity", desc: "Add a 'Questions' field if something is unclear."},
+    {icon: "⚡", title: "Independent & deployable", desc: "Each ticket should be mergeable without blocking others."}
+  ]
+};
+var EMPTY_REQ = {problem:"",roleplayExample:"",frequency:"",stakeholders:[],consequences:[],agentPotential:"",workaround:"",definition:"",pipelineStage:"",impactScore:0,frequencyScore:0,riskScore:0,leverageScore:0,easyWin:false};
 
-function teamColor(n){return TEAM_COLORS[TEAMS.indexOf(n)%TEAM_COLORS.length]||TEAM_COLORS[0];}
-function agentBadge(a){return ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"})[a]||"bg-gray-100 text-gray-500";}
-function buckBadge(b){return ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"})[b]||"bg-gray-100 text-gray-600";}
-function getScore(r){return (r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0);}
-function autoBucket(s){return s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet";}
-function voterId(user){return (user.name||user.team).toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");}
-function top5ByTeam(reqs,team){return reqs.filter(function(r){return r.team===team;}).sort(function(a,b){return getScore(b)-getScore(a);});}
-function cx(){return Array.from(arguments).filter(Boolean).join(" ");}
+function teamColor(n) { return TEAM_COLORS[TEAMS.indexOf(n) % TEAM_COLORS.length] || TEAM_COLORS[0]; }
+function agentBadge(a) { return ({"Assisted by AI":"bg-blue-100 text-blue-700","Fully automated":"bg-green-100 text-green-700","Orchestrated by an agent":"bg-purple-100 text-purple-700","Not suitable for AI":"bg-gray-100 text-gray-500"})[a] || "bg-gray-100 text-gray-500"; }
+function buckBadge(b) { return ({"Must-fix":"bg-rose-100 text-rose-700","Scale enabler":"bg-amber-100 text-amber-700","Strategic bet":"bg-indigo-100 text-indigo-700"})[b] || "bg-gray-100 text-gray-600"; }
+function getScore(r) { return (r.impactScore||0)+(r.frequencyScore||0)+(r.riskScore||0)+(r.leverageScore||0); }
+function autoBucket(s) { return s>=16?"Must-fix":s>=10?"Scale enabler":"Strategic bet"; }
+function getCategory(r) { return r.recommended_category || r.category || ""; }
+function voterId(user) { return (user.name||user.team).toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,""); }
+function sortedByScore(arr) { return arr.slice().sort(function(a,b){return getScore(b)-getScore(a);}); }
 
 // ── Primitives ───────────────────────────────────────────────
-function Badge(props){return <span className={"text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap "+props.cls}>{props.children}</span>;}
-function SyncBadge(props){
-  var map={syncing:"🔄 Syncing…",ok:"✅ Saved",error:"⚠️ Sync error"};
-  if(!map[props.status])return null;
-  var col=props.status==="syncing"?"text-indigo-500":props.status==="ok"?"text-emerald-600":"text-rose-600";
-  return <span className={"text-xs font-semibold "+col}>{map[props.status]}</span>;
+function Badge(props) {
+  return React.createElement("span", {className: "text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap " + props.cls}, props.children);
 }
-function Chip(props){
-  var cls=props.active?"bg-indigo-600 text-white border-indigo-600":"bg-white text-gray-600 border-gray-200 hover:border-indigo-300";
-  return <button onClick={props.onClick} className={"text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all "+cls}>{props.label}</button>;
+function SyncBadge(props) {
+  var map = {syncing:"🔄 Syncing…",ok:"✅ Saved",error:"⚠️ Sync error"};
+  if (!map[props.status]) return null;
+  var col = props.status==="syncing"?"text-indigo-500":props.status==="ok"?"text-emerald-600":"text-rose-600";
+  return React.createElement("span", {className: "text-xs font-semibold " + col}, map[props.status]);
 }
-function MultiChips(props){
-  return <div className="flex flex-wrap gap-2">{props.options.map(function(o){return <Chip key={o} label={o} active={props.selected.includes(o)} onClick={function(){props.onChange(props.selected.includes(o)?props.selected.filter(function(x){return x!==o;}):[...props.selected,o]);}}/>; })}</div>;
+function Chip(props) {
+  var cls = props.active ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300";
+  return React.createElement("button", {onClick: props.onClick, className: "text-xs px-3 py-2 rounded-xl border-2 font-medium transition-all " + cls}, props.label);
 }
-function ScorePicker(props){
-  var colorMap={blue:"bg-blue-600 border-blue-600",orange:"bg-orange-500 border-orange-500",red:"bg-red-600 border-red-600",indigo:"bg-indigo-600 border-indigo-600"};
-  return <div className="space-y-1">
-    <p className="text-xs font-semibold text-gray-700">{props.emoji} {props.label}</p>
-    <div className="flex gap-1">{[1,2,3,4,5].map(function(n){
-      var active=props.value===n;
-      var btnCls=active?(colorMap[props.color]+" text-white"):"border-gray-300 text-gray-400 hover:border-indigo-300";
-      return <button key={n} onClick={function(){props.onChange(n);}} className={"w-8 h-8 rounded-lg border text-xs font-bold transition-all "+btnCls}>{n}</button>;
-    })}</div>
-    {props.desc&&<p className="text-xs text-gray-400 leading-relaxed">{props.desc}</p>}
-  </div>;
+function MultiChips(props) {
+  return React.createElement("div", {className: "flex flex-wrap gap-2"},
+    props.options.map(function(o) {
+      return React.createElement(Chip, {key: o, label: o, active: props.selected.includes(o), onClick: function() {
+        props.onChange(props.selected.includes(o) ? props.selected.filter(function(x){return x!==o;}) : props.selected.concat([o]));
+      }});
+    })
+  );
 }
-function Section(props){
-  return <div className="rounded-2xl border shadow-sm overflow-hidden">
-    <div className={props.bgColor+" px-5 py-4 flex items-center gap-3"}>
-      <div className="w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0">{props.step}</div>
-      <div><p className="text-base font-black text-white">{props.emoji} {props.label}</p>{props.sublabel&&<p className="text-xs text-white opacity-80 mt-0.5">{props.sublabel}</p>}</div>
-    </div>
-    <div className="bg-white p-5 space-y-5">{props.children}</div>
-  </div>;
+function ScorePicker(props) {
+  var colorMap = {blue:"bg-blue-600 border-blue-600",orange:"bg-orange-500 border-orange-500",red:"bg-red-600 border-red-600",indigo:"bg-indigo-600 border-indigo-600"};
+  return React.createElement("div", {className: "space-y-1"},
+    React.createElement("p", {className: "text-xs font-semibold text-gray-700"}, props.emoji + " " + props.label),
+    React.createElement("div", {className: "flex gap-1"},
+      [1,2,3,4,5].map(function(n) {
+        var active = props.value === n;
+        var cls = active ? (colorMap[props.color] + " text-white") : "border-gray-300 text-gray-400 hover:border-indigo-300";
+        return React.createElement("button", {key: n, onClick: function(){props.onChange(n);}, className: "w-8 h-8 rounded-lg border text-xs font-bold transition-all " + cls}, n);
+      })
+    ),
+    props.desc && React.createElement("p", {className: "text-xs text-gray-400 leading-relaxed"}, props.desc)
+  );
 }
-function Field(props){
-  return <div className="space-y-2">
-    <div className="flex items-center gap-2">
-      <label className="text-sm font-bold text-gray-800">{props.label}{props.required&&<span className="text-red-400"> *</span>}</label>
-      {props.tipKey&&FIELD_TOOLTIPS[props.tipKey]&&<Tooltip tip={FIELD_TOOLTIPS[props.tipKey]}/>}
-    </div>
-    {props.children}
-  </div>;
+
+function Tooltip(props) {
+  var tip = props.tip;
+  var s = useState(false); var open = s[0]; var setOpen = s[1];
+  var ref = useRef(null);
+  useEffect(function() {
+    function h(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", h);
+    return function() { document.removeEventListener("mousedown", h); };
+  }, []);
+  if (!tip) return null;
+  return React.createElement("div", {className: "relative inline-block", ref: ref},
+    React.createElement("button", {onClick: function(){setOpen(function(o){return !o;});}, className: "w-5 h-5 rounded-full bg-indigo-100 text-indigo-500 text-xs font-black hover:bg-indigo-200 flex items-center justify-center"}, "?"),
+    open && React.createElement("div", {className: "absolute z-50 left-0 top-7 w-80 bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-3"},
+      React.createElement("p", {className: "text-sm font-black text-gray-900"}, tip.title),
+      React.createElement("div", null,
+        React.createElement("p", {className: "text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1"}, "What"),
+        React.createElement("p", {className: "text-xs text-gray-600 leading-relaxed"}, tip.what)
+      ),
+      React.createElement("div", null,
+        React.createElement("p", {className: "text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1"}, "Why it matters"),
+        React.createElement("p", {className: "text-xs text-gray-600 leading-relaxed"}, tip.why)
+      ),
+      tip.tips && React.createElement("div", null,
+        React.createElement("p", {className: "text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1"}, "Tips"),
+        React.createElement("ul", {className: "space-y-1"},
+          tip.tips.map(function(t,i) {
+            return React.createElement("li", {key: i, className: "text-xs text-gray-600 flex gap-1.5"},
+              React.createElement("span", {className: "text-indigo-400"}, "→"), t);
+          })
+        )
+      ),
+      (tip.bad || tip.good) && React.createElement("div", {className: "space-y-2 pt-1 border-t"},
+        tip.bad && React.createElement("div", {className: "bg-red-50 rounded-xl px-3 py-2"},
+          React.createElement("p", {className: "text-xs font-bold text-red-500 mb-0.5"}, "❌ Too vague"),
+          React.createElement("p", {className: "text-xs text-red-700 italic"}, '"' + tip.bad + '"')
+        ),
+        tip.good && React.createElement("div", {className: "bg-green-50 rounded-xl px-3 py-2"},
+          React.createElement("p", {className: "text-xs font-bold text-green-600 mb-0.5"}, "✅ Good example"),
+          React.createElement("p", {className: "text-xs text-green-700 italic"}, '"' + tip.good + '"')
+        )
+      )
+    )
+  );
 }
-function Tooltip(props){
-  var tip=props.tip;
-  var _s=useState(false); var open=_s[0]; var setOpen=_s[1];
-  var ref=useRef(null);
-  useEffect(function(){
-    function h(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
-    document.addEventListener("mousedown",h);return function(){document.removeEventListener("mousedown",h);};
-  },[]);
-  return <div className="relative inline-block" ref={ref}>
-    <button onClick={function(){setOpen(function(o){return !o;});}} className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-500 text-xs font-black hover:bg-indigo-200 flex items-center justify-center">?</button>
-    {open&&<div className="absolute z-50 left-0 top-7 w-80 bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-3">
-      <p className="text-sm font-black text-gray-900">{tip.title}</p>
-      <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">What</p><p className="text-xs text-gray-600 leading-relaxed">{tip.what}</p></div>
-      <div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Why it matters</p><p className="text-xs text-gray-600 leading-relaxed">{tip.why}</p></div>
-      {tip.tips&&<div><p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-1">Tips</p><ul className="space-y-1">{tip.tips.map(function(t,i){return <li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400">→</span>{t}</li>;})}</ul></div>}
-      {(tip.bad||tip.good)&&<div className="space-y-2 pt-1 border-t">
-        {tip.bad&&<div className="bg-red-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-red-500 mb-0.5">❌ Too vague</p><p className="text-xs text-red-700 italic">"{tip.bad}"</p></div>}
-        {tip.good&&<div className="bg-green-50 rounded-xl px-3 py-2"><p className="text-xs font-bold text-green-600 mb-0.5">✅ Good example</p><p className="text-xs text-green-700 italic">"{tip.good}"</p></div>}
-      </div>}
-    </div>}
-  </div>;
+
+function EasyWinTooltip() {
+  var s = useState(false); var open = s[0]; var setOpen = s[1];
+  var ref = useRef(null);
+  useEffect(function() {
+    function h(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", h);
+    return function() { document.removeEventListener("mousedown", h); };
+  }, []);
+  return React.createElement("div", {className: "relative inline-block", ref: ref},
+    React.createElement("button", {onClick: function(e){e.stopPropagation();setOpen(function(o){return !o;});}, className: "w-4 h-4 rounded-full bg-green-100 text-green-600 text-xs font-black hover:bg-green-200 flex items-center justify-center"}, "?"),
+    open && React.createElement("div", {className: "absolute z-50 left-0 top-6 w-72 bg-white border border-gray-200 rounded-2xl shadow-xl p-4 space-y-2"},
+      React.createElement("p", {className: "text-sm font-black text-gray-900"}, "⚡ Easy win"),
+      React.createElement("p", {className: "text-xs text-gray-600 leading-relaxed"}, "Mark this if the ticket is straightforward and ready to build without further analysis:"),
+      React.createElement("ul", {className: "space-y-1"},
+        ["The scope is clear and well-defined","No deep discovery or architectural decision needed","Engineering can start immediately","The fix is isolated and unlikely to have side effects"].map(function(t,i){
+          return React.createElement("li", {key: i, className: "text-xs text-gray-600 flex gap-1.5"},
+            React.createElement("span", {className: "text-green-500"}, "✓"), t);
+        })
+      ),
+      React.createElement("div", {className: "bg-green-50 rounded-xl px-3 py-2 mt-1"},
+        React.createElement("p", {className: "text-xs text-green-700"}, "Easy wins skip Synthesis & Vote and go straight to Engineering as standalone tickets.")
+      )
+    )
+  );
 }
-function OtherSelect(props){
-  var knownOptions=props.options.filter(function(o){return o!=="Other";});
-  var isCustom=props.value&&!knownOptions.includes(props.value)&&props.value!=="Other"&&props.value!=="";
-  var _s=useState(isCustom?"Other":props.value||""); var sel=_s[0]; var setSel=_s[1];
-  var _c=useState(isCustom?props.value:""); var custom=_c[0]; var setCustom=_c[1];
-  var _i=useState(isCustom); var showInput=_i[0]; var setShowInput=_i[1];
-  function handleSel(v){setSel(v);if(v==="Other"){setShowInput(true);props.onChange("");}else{setShowInput(false);setCustom("");props.onChange(v);}}
-  return <div className="space-y-1.5">
-    <select className="w-full border rounded-lg px-2 py-1.5 text-xs bg-white" value={sel} onChange={function(e){handleSel(e.target.value);}}>
-      <option value="">{props.placeholder||"Select…"}</option>
-      {props.options.map(function(o){return <option key={o}>{o}</option>;})}
-    </select>
-    {showInput&&<input className="w-full border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-indigo-400" placeholder="Describe…" value={custom} onChange={function(e){setCustom(e.target.value);props.onChange(e.target.value);}}/>}
-  </div>;
+
+function OtherSelect(props) {
+  var knownOptions = props.options.filter(function(o){return o!=="Other";});
+  var isCustom = props.value && !knownOptions.includes(props.value) && props.value !== "Other" && props.value !== "";
+  var s1 = useState(isCustom ? "Other" : (props.value||"")); var sel = s1[0]; var setSel = s1[1];
+  var s2 = useState(isCustom ? props.value : ""); var custom = s2[0]; var setCustom = s2[1];
+  var s3 = useState(isCustom); var showInput = s3[0]; var setShowInput = s3[1];
+  function handleSel(v) {
+    setSel(v);
+    if (v==="Other") { setShowInput(true); props.onChange(""); }
+    else { setShowInput(false); setCustom(""); props.onChange(v); }
+  }
+  return React.createElement("div", {className: "space-y-1.5"},
+    React.createElement("select", {className: "w-full border rounded-lg px-2 py-1.5 text-xs bg-white", value: sel, onChange: function(e){handleSel(e.target.value);}},
+      React.createElement("option", {value: ""}, props.placeholder||"Select…"),
+      props.options.map(function(o){return React.createElement("option", {key: o}, o);})
+    ),
+    showInput && React.createElement("input", {className: "w-full border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-indigo-400", placeholder: "Describe…", value: custom, onChange: function(e){setCustom(e.target.value);props.onChange(e.target.value);}})
+  );
+}
+
+function Section(props) {
+  return React.createElement("div", {className: "rounded-2xl border shadow-sm overflow-hidden"},
+    React.createElement("div", {className: props.bgColor + " px-5 py-4 flex items-center gap-3"},
+      React.createElement("div", {className: "w-8 h-8 rounded-full bg-white bg-opacity-20 flex items-center justify-center text-white font-black text-sm flex-shrink-0"}, props.step),
+      React.createElement("div", null,
+        React.createElement("p", {className: "text-base font-black text-white"}, props.emoji + " " + props.label),
+        props.sublabel && React.createElement("p", {className: "text-xs text-white opacity-80 mt-0.5"}, props.sublabel)
+      )
+    ),
+    React.createElement("div", {className: "bg-white p-5 space-y-5"}, props.children)
+  );
+}
+
+function Field(props) {
+  return React.createElement("div", {className: "space-y-2"},
+    React.createElement("div", {className: "flex items-center gap-2"},
+      React.createElement("label", {className: "text-sm font-bold text-gray-800"},
+        props.label,
+        props.required && React.createElement("span", {className: "text-red-400"}, " *")
+      ),
+      props.tipKey && FIELD_TOOLTIPS[props.tipKey] && React.createElement(Tooltip, {tip: FIELD_TOOLTIPS[props.tipKey]})
+    ),
+    props.children
+  );
 }
 
 // ── Team Context Panel ───────────────────────────────────────
-function TeamContextPanel(props){
-  var team=props.team;
-  var _o=useState(false); var open=_o[0]; var setOpen=_o[1];
-  var ctx=TEAM_CONTEXT[team]; var members=TEAM_MEMBERS[team]||[]; var tc=teamColor(team);
-  if(!ctx)return null;
-  return <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-    <button onClick={function(){setOpen(function(o){return !o;});}} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50">
-      <span className="text-xl">{ctx.emoji}</span>
-      <div className="flex-1"><p className="text-sm font-bold text-gray-800">{team} <span className="font-normal text-gray-400">· {ctx.role}</span></p><p className="text-xs text-gray-400">{open?"Hide":"Show"} your role, responsibilities & focus areas</p></div>
-      <span className="text-gray-300 text-lg">{open?"▲":"▼"}</span>
-    </button>
-    {open&&<div className="border-t p-4 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <div><p className="text-xs font-black text-gray-700 uppercase tracking-wide mb-1">Responsibilities</p><ul className="space-y-1">{ctx.responsibilities.map(function(r,i){return <li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400">→</span>{r}</li>;})}</ul></div>
-        <div><p className="text-xs font-black text-gray-700 uppercase tracking-wide mb-1">Focus areas</p><ul className="space-y-1">{ctx.focus.map(function(f,i){return <li key={i} className="text-xs text-gray-600 flex gap-1.5"><span className="text-indigo-400">·</span>{f}</li>;})}</ul></div>
-      </div>
-      {members.length>0&&<div className="pt-2 border-t"><p className="text-xs font-black text-gray-700 uppercase tracking-wide mb-2">Team members</p><div className="flex flex-wrap gap-2">{members.map(function(m,i){return <span key={i} className={"text-xs px-2 py-1 rounded-full font-medium "+tc.badge}>{m}</span>;})}</div></div>}
-    </div>}
-  </div>;
+function TeamContextPanel(props) {
+  var team = props.team;
+  var s = useState(false); var open = s[0]; var setOpen = s[1];
+  var ctx = TEAM_CONTEXT[team]; var members = TEAM_MEMBERS[team]||[]; var tc = teamColor(team);
+  if (!ctx) return null;
+  return React.createElement("div", {className: "bg-white rounded-xl border shadow-sm overflow-hidden"},
+    React.createElement("button", {onClick: function(){setOpen(function(o){return !o;});}, className: "w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50"},
+      React.createElement("span", {className: "text-xl"}, ctx.emoji),
+      React.createElement("div", {className: "flex-1"},
+        React.createElement("p", {className: "text-sm font-bold text-gray-800"}, team + " · " + ctx.role),
+        React.createElement("p", {className: "text-xs text-gray-400"}, open?"Hide":"Show" + " your role, responsibilities & focus areas")
+      ),
+      React.createElement("span", {className: "text-gray-300 text-lg"}, open?"▲":"▼")
+    ),
+    open && React.createElement("div", {className: "border-t p-4 space-y-3"},
+      React.createElement("div", {className: "grid grid-cols-2 gap-3"},
+        React.createElement("div", null,
+          React.createElement("p", {className: "text-xs font-black text-gray-700 uppercase tracking-wide mb-1"}, "Responsibilities"),
+          React.createElement("ul", {className: "space-y-1"},
+            ctx.responsibilities.map(function(r,i){
+              return React.createElement("li", {key:i, className:"text-xs text-gray-600 flex gap-1.5"},
+                React.createElement("span",{className:"text-indigo-400"},"→"), r);
+            })
+          )
+        ),
+        React.createElement("div", null,
+          React.createElement("p", {className: "text-xs font-black text-gray-700 uppercase tracking-wide mb-1"}, "Focus areas"),
+          React.createElement("ul", {className: "space-y-1"},
+            ctx.focus.map(function(f,i){
+              return React.createElement("li", {key:i, className:"text-xs text-gray-600 flex gap-1.5"},
+                React.createElement("span",{className:"text-indigo-400"},"·"), f);
+            })
+          )
+        )
+      ),
+      members.length > 0 && React.createElement("div", {className: "pt-2 border-t"},
+        React.createElement("p", {className: "text-xs font-black text-gray-700 uppercase tracking-wide mb-2"}, "Team members"),
+        React.createElement("div", {className: "flex flex-wrap gap-2"},
+          members.map(function(m,i){
+            return React.createElement("span", {key:i, className:"text-xs px-2 py-1 rounded-full font-medium " + tc.badge}, m);
+          })
+        )
+      )
+    )
+  );
 }
 
 // ── Entry Screen ─────────────────────────────────────────────
-function EntryScreen(props){
-  var _q=useState(""); var query=_q[0]; var setQuery=_q[1];
-  var _s=useState(null); var selected=_s[0]; var setSelected=_s[1];
-  var _d=useState(null); var day=_d[0]; var setDay=_d[1];
-  var _dd=useState(false); var showDropdown=_dd[0]; var setShowDropdown=_dd[1];
-  var inputRef=useRef(null);
-  var filtered=query.trim().length>=1?ALL_MEMBERS.filter(function(m){return m.name.toLowerCase().includes(query.toLowerCase());}):[];
-  function handleSelect(m){setSelected(m);setQuery(m.name);setShowDropdown(false);}
-  function handleInput(v){setQuery(v);setSelected(null);setShowDropdown(true);}
-  var tc=selected?teamColor(selected.team):null;
-  return <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6">
-    <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6">
-      <div className="text-center"><div className="text-5xl mb-2">⚡</div><h1 className="text-2xl font-black text-gray-900">Offsite Hub</h1><p className="text-gray-400 text-xs">Operations × Engineering · March 2026</p></div>
-      <div className="space-y-2">
-        <label className="text-sm font-bold text-gray-700 block">Who are you?</label>
-        <div className="relative">
-          <input ref={inputRef} type="text" value={query} onChange={function(e){handleInput(e.target.value);}} onFocus={function(){if(query.trim())setShowDropdown(true);}} placeholder="Search your name…" className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 pr-10" autoComplete="off"/>
-          {query&&<button onClick={function(){setQuery("");setSelected(null);setShowDropdown(false);if(inputRef.current)inputRef.current.focus();}} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg">×</button>}
-          {showDropdown&&filtered.length>0&&<div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-56 overflow-y-auto">
-            {filtered.map(function(m,i){var mtc=teamColor(m.team);return <button key={i} onClick={function(){handleSelect(m);}} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 text-left border-b border-gray-50 last:border-0"><div className="flex-1"><p className="text-sm font-semibold text-gray-800">{m.name}</p><p className="text-xs text-gray-400">{m.team}</p></div><span className={"text-xs px-2 py-0.5 rounded-full font-medium "+mtc.badge}>{m.team}</span></button>;})}
-          </div>}
-          {showDropdown&&query.trim().length>=1&&filtered.length===0&&<div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl px-4 py-3"><p className="text-xs text-gray-400">No matches. Ask the facilitator to add you.</p></div>}
-        </div>
-        {selected&&tc&&<div className={"rounded-xl border-2 px-4 py-3 flex items-center gap-3 "+tc.light}><div className="flex-1"><p className="text-sm font-black">{selected.name}</p><p className="text-xs opacity-70">{selected.team} · {TEAM_CONTEXT[selected.team]&&TEAM_CONTEXT[selected.team].role}</p></div><span className="text-lg">{TEAM_CONTEXT[selected.team]&&TEAM_CONTEXT[selected.team].emoji}</span></div>}
-        {selected&&tc&&<div className="bg-gray-50 rounded-2xl p-4 space-y-2"><p className="text-xs font-black text-gray-500 uppercase tracking-wide">Your team</p><div className="flex flex-wrap gap-1.5">{TEAM_MEMBERS[selected.team].map(function(m,i){return <span key={i} className={"text-xs px-2.5 py-1 rounded-full font-medium "+(m===selected.name?tc.bg+" text-white":tc.badge)}>{m}</span>;})}</div></div>}
-      </div>
-      <div>
-        <label className="text-sm font-bold text-gray-700 block mb-3">Which day is it?</label>
-        <div className="grid grid-cols-2 gap-3">
-          {[{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(function(item){
-            var cls=day===item.d?"bg-indigo-50 border-indigo-500 text-indigo-700":"border-gray-200 text-gray-400 hover:border-gray-300";
-            return <button key={item.d} onClick={function(){setDay(item.d);}} className={"py-4 rounded-xl border-2 text-sm font-semibold transition-all "+cls}><div className="text-2xl mb-1">{item.emoji}</div><div className="font-bold">{item.label}</div><div className="text-xs opacity-70">{item.sub}</div></button>;
-          })}
-        </div>
-      </div>
-      <button onClick={function(){if(selected&&day)props.onEnter(selected.team,day,selected.name);}} disabled={!selected||!day} className="w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed">Enter the Hub →</button>
-      {!selected&&<p className="text-center text-xs text-gray-300">Search your name to get started</p>}
-    </div>
-  </div>;
+function EntryScreen(props) {
+  var s1=useState(""); var query=s1[0]; var setQuery=s1[1];
+  var s2=useState(null); var selected=s2[0]; var setSelected=s2[1];
+  var s3=useState(null); var day=s3[0]; var setDay=s3[1];
+  var s4=useState(false); var showDD=s4[0]; var setShowDD=s4[1];
+  var inputRef = useRef(null);
+  var filtered = query.trim().length>=1 ? ALL_MEMBERS.filter(function(m){return m.name.toLowerCase().includes(query.toLowerCase());}) : [];
+  function handleSelect(m) { setSelected(m); setQuery(m.name); setShowDD(false); }
+  var tc = selected ? teamColor(selected.team) : null;
+  return React.createElement("div", {className: "min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6"},
+    React.createElement("div", {className: "bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6"},
+      React.createElement("div", {className: "text-center"},
+        React.createElement("div", {className: "text-5xl mb-2"}, "⚡"),
+        React.createElement("h1", {className: "text-2xl font-black text-gray-900"}, "Offsite Hub"),
+        React.createElement("p", {className: "text-gray-400 text-xs"}, "Operations × Engineering · March 2026")
+      ),
+      React.createElement("div", {className: "space-y-2"},
+        React.createElement("label", {className: "text-sm font-bold text-gray-700 block"}, "Who are you?"),
+        React.createElement("div", {className: "relative"},
+          React.createElement("input", {ref: inputRef, type:"text", value:query, onChange:function(e){setQuery(e.target.value);setSelected(null);setShowDD(true);}, onFocus:function(){if(query.trim())setShowDD(true);}, placeholder:"Search your name…", className:"w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 pr-10", autoComplete:"off"}),
+          query && React.createElement("button", {onClick:function(){setQuery("");setSelected(null);setShowDD(false);}, className:"absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-lg"}, "×"),
+          showDD && filtered.length>0 && React.createElement("div", {className:"absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-56 overflow-y-auto"},
+            filtered.map(function(m,i){
+              var mtc=teamColor(m.team);
+              return React.createElement("button",{key:i,onClick:function(){handleSelect(m);},className:"w-full flex items-center gap-3 px-4 py-3 hover:bg-indigo-50 text-left border-b border-gray-50 last:border-0"},
+                React.createElement("div",{className:"flex-1"},
+                  React.createElement("p",{className:"text-sm font-semibold text-gray-800"},m.name),
+                  React.createElement("p",{className:"text-xs text-gray-400"},m.team)
+                ),
+                React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+mtc.badge},m.team)
+              );
+            })
+          ),
+          showDD && query.trim().length>=1 && filtered.length===0 && React.createElement("div",{className:"absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-2xl shadow-xl px-4 py-3"},
+            React.createElement("p",{className:"text-xs text-gray-400"},"No matches. Ask the facilitator to add you.")
+          )
+        ),
+        selected && tc && React.createElement("div",{className:"rounded-xl border-2 px-4 py-3 flex items-center gap-3 "+tc.light},
+          React.createElement("div",{className:"flex-1"},
+            React.createElement("p",{className:"text-sm font-black"},selected.name),
+            React.createElement("p",{className:"text-xs opacity-70"},selected.team+" · "+(TEAM_CONTEXT[selected.team]&&TEAM_CONTEXT[selected.team].role))
+          ),
+          React.createElement("span",{className:"text-lg"},TEAM_CONTEXT[selected.team]&&TEAM_CONTEXT[selected.team].emoji)
+        ),
+        selected && tc && React.createElement("div",{className:"bg-gray-50 rounded-2xl p-4 space-y-2"},
+          React.createElement("p",{className:"text-xs font-black text-gray-500 uppercase tracking-wide"},"Your team"),
+          React.createElement("div",{className:"flex flex-wrap gap-1.5"},
+            TEAM_MEMBERS[selected.team].map(function(m,i){
+              return React.createElement("span",{key:i,className:"text-xs px-2.5 py-1 rounded-full font-medium "+(m===selected.name?tc.bg+" text-white":tc.badge)},m);
+            })
+          )
+        )
+      ),
+      React.createElement("div",null,
+        React.createElement("label",{className:"text-sm font-bold text-gray-700 block mb-3"},"Which day is it?"),
+        React.createElement("div",{className:"grid grid-cols-2 gap-3"},
+          [{d:1,label:"Day 1",sub:"Roleplay + Capture",emoji:"🎭"},{d:2,label:"Day 2",sub:"Synthesis + Engineering",emoji:"⚙️"}].map(function(item){
+            var cls = day===item.d ? "bg-indigo-50 border-indigo-500 text-indigo-700" : "border-gray-200 text-gray-400 hover:border-gray-300";
+            return React.createElement("button",{key:item.d,onClick:function(){setDay(item.d);},className:"py-4 rounded-xl border-2 text-sm font-semibold transition-all "+cls},
+              React.createElement("div",{className:"text-2xl mb-1"},item.emoji),
+              React.createElement("div",{className:"font-bold"},item.label),
+              React.createElement("div",{className:"text-xs opacity-70"},item.sub)
+            );
+          })
+        )
+      ),
+      React.createElement("button",{onClick:function(){if(selected&&day)props.onEnter(selected.team,day,selected.name);},disabled:!selected||!day,className:"w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed"},"Enter the Hub →"),
+      !selected && React.createElement("p",{className:"text-center text-xs text-gray-300"},"Search your name to get started")
+    )
+  );
 }
 
 // ── Submit Tab ───────────────────────────────────────────────
-function SubmitTab(props){
+function SubmitTab(props) {
   var user=props.user; var onSave=props.onSave; var syncStatus=props.syncStatus;
-  var _f=useState(EMPTY_REQ); var form=_f[0]; var setForm=_f[1];
-  var _d=useState(false); var done=_d[0]; var setDone=_d[1];
-  var _sv=useState(false); var saving=_sv[0]; var setSaving=_sv[1];
+  var s1=useState(EMPTY_REQ); var form=s1[0]; var setForm=s1[1];
+  var s2=useState(false); var done=s2[0]; var setDone=s2[1];
+  var s3=useState(false); var saving=s3[0]; var setSaving=s3[1];
   function f(k,v){setForm(function(p){var n=Object.assign({},p);n[k]=v;return n;});}
-  var canSubmit=!!(form.problem&&form.problem.trim()&&form.roleplayExample&&form.roleplayExample.trim()&&form.frequency&&form.definition&&form.definition.trim());
-  var missing=[!form.problem.trim()&&"problem",!form.roleplayExample.trim()&&"context",!form.frequency&&"frequency",!form.definition.trim()&&"definition of solved"].filter(Boolean);
-  async function submit(){
-    if(!canSubmit)return;setSaving(true);
-    var req=Object.assign({},form,{id:Date.now(),team:user.team,submittedBy:user.name||"",ts:new Date().toISOString(),cluster:"Unclustered",category:"",bucket:""});
-    try{var t=await gs.translate({problem:req.problem,roleplayExample:req.roleplayExample,workaround:req.workaround,definition:req.definition});await onSave(Object.assign({},req,t));}catch(e){await onSave(req);}
-    setSaving(false);setForm(EMPTY_REQ);setDone(true);setTimeout(function(){setDone(false);},3500);
+  var canSubmit = !!(form.problem&&form.problem.trim()&&form.roleplayExample&&form.roleplayExample.trim()&&form.frequency&&form.definition&&form.definition.trim());
+  var missing = [!form.problem.trim()&&"problem",!form.roleplayExample.trim()&&"context",!form.frequency&&"frequency",!form.definition.trim()&&"definition"].filter(Boolean);
+  function submit() {
+    if(!canSubmit)return;
+    setSaving(true);
+    var req = Object.assign({},form,{id:Date.now(),team:user.team,submittedBy:user.name||"",ts:new Date().toISOString(),cluster:"Unclustered",category:"",bucket:""});
+    gs.translate({problem:req.problem,roleplayExample:req.roleplayExample,workaround:req.workaround,definition:req.definition})
+      .then(function(t){return onSave(Object.assign({},req,t));})
+      .catch(function(){return onSave(req);})
+      .then(function(){setSaving(false);setForm(EMPTY_REQ);setDone(true);setTimeout(function(){setDone(false);},3500);});
   }
-  var ta="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300";
-  var selCls="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
-  var steps=[{l:"Problem",ok:!!(form.problem.trim()&&form.roleplayExample.trim()&&form.frequency)},{l:"Impact",ok:!!(form.stakeholders.length||form.consequences.length||form.workaround.trim())},{l:"Agent",ok:!!form.agentPotential},{l:"Solved when",ok:!!form.definition.trim()}];
-  return <div className="space-y-4">
-    {done&&<div style={{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999}} className="bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl">✅ Saved! Add another one.</div>}
-    <div className="bg-white rounded-xl border px-4 py-3 flex items-center gap-2 flex-wrap">
-      {steps.map(function(s,i){return <div key={i} className="flex items-center gap-1.5">{i>0&&<div className="w-4 h-px bg-gray-200"/>}<div className={"flex items-center gap-1 text-xs font-semibold "+(s.ok?"text-indigo-600":"text-gray-400")}><div className={"w-4 h-4 rounded-full flex items-center justify-center text-xs "+(s.ok?"bg-indigo-600 text-white":"bg-gray-100")}>{s.ok?"✓":i+1}</div>{s.l}</div></div>;})}
-      <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus}/><span className="text-xs text-gray-400 italic">✨ Auto-translated</span></span>
-    </div>
-    <Section step="1" bgColor="bg-indigo-700" emoji="🔍" label="The Requirement" sublabel="Capture what happened while it's fresh. Write in any language.">
-      <Field label="What broke, slowed down or is missing?" required={true} tipKey="problem"><textarea className={ta} rows={2} value={form.problem} onChange={function(e){f("problem",e.target.value);}} placeholder="Describe the symptom in one sentence — a bug, a bottleneck, or a missing capability."/></Field>
-      <Field label="Additional context & roleplay evidence" required={true} tipKey="roleplay"><textarea className={ta} rows={4} value={form.roleplayExample} onChange={function(e){f("roleplayExample",e.target.value);}} placeholder="Walk through what happened step by step. Who did what, what went wrong, what was the cost?"/></Field>
-      <Field label="How often does this happen in real production?" required={true} tipKey="frequency">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{FREQUENCIES.map(function(fr){var m=FREQ_META[fr];var active=form.frequency===fr;var cls=active?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-600 hover:border-indigo-300";return <button key={fr} onClick={function(){f("frequency",fr);}} className={"flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all "+cls}><span className="text-lg">{m.emoji}</span><span className="text-xs font-bold">{fr}</span><span className={"text-xs "+(active?"text-indigo-200":"text-gray-400")}>{m.desc}</span></button>;})}</div>
-      </Field>
-      <Field label="Where in the pipeline does this happen?" tipKey="pipelineStage"><select className={selCls} value={form.pipelineStage} onChange={function(e){f("pipelineStage",e.target.value);}}><option value="">Select a stage…</option>{PIPELINE_STAGES.map(function(s){return <option key={s}>{s}</option>;})}</select></Field>
-    </Section>
-    <Section step="2" bgColor="bg-rose-600" emoji="💥" label="The Impact" sublabel="Who suffers and what is it costing right now?">
-      <Field label="Who feels the pain directly?" tipKey="stakeholders"><MultiChips options={STAKEHOLDERS} selected={form.stakeholders} onChange={function(v){f("stakeholders",v);}}/></Field>
-      <Field label="What's the real cost of not fixing this?" tipKey="consequences"><MultiChips options={CONSEQUENCES} selected={form.consequences} onChange={function(v){f("consequences",v);}}/></Field>
-      <Field label="How is the team handling this today?" tipKey="workaround"><textarea className={ta} rows={2} value={form.workaround} onChange={function(e){f("workaround",e.target.value);}} placeholder="Describe the steps the team takes to work around this. Estimate the time cost per project."/></Field>
-    </Section>
-    <Section step="3" bgColor="bg-violet-600" emoji="🤖" label="Agent Potential" sublabel="Could AI handle this step?">
-      <Field label="If we were to automate this, what level makes sense?" tipKey="agentPotential">
-        <div className="space-y-2">{AGENT_POTENTIALS.map(function(ap){var m=AGENT_META[ap];var active=form.agentPotential===ap;var cls=active?"bg-violet-600 border-violet-600 text-white":"bg-white border-gray-200 hover:border-violet-300";return <button key={ap} onClick={function(){f("agentPotential",ap);}} className={"w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all "+cls}><span className="text-xl flex-shrink-0">{m.emoji}</span><div><p className={"text-sm font-bold "+(active?"text-white":"text-gray-800")}>{ap}</p><p className={"text-xs mt-0.5 "+(active?"text-violet-200":"text-gray-500")}>{m.desc}</p></div>{active&&<span className="ml-auto text-white">✓</span>}</button>; })}</div>
-      </Field>
-    </Section>
-    <Section step="4" bgColor="bg-emerald-600" emoji="🎯" label="Definition of Solved" sublabel="What does success look like?">
-      <Field label="How would we know this is fixed?" required={true} tipKey="definition"><textarea className={ta} rows={4} value={form.definition} onChange={function(e){f("definition",e.target.value);}} placeholder="Describe what day-to-day looks like when this problem no longer exists. Write in present tense."/></Field>
-    </Section>
-    <button onClick={submit} disabled={!canSubmit||saving} className="w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-md">
-      {saving?"✨ Translating & saving…":canSubmit?"Submit Requirement ✓":"Complete required fields to submit"}
-    </button>
-    {!canSubmit&&<p className="text-xs text-center text-gray-400">Still needed: {missing.join(" · ")}</p>}
-  </div>;
+  var ta = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-300";
+  var selCls = "w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 bg-white";
+  return React.createElement("div", {className:"space-y-4"},
+    done && React.createElement("div",{style:{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",zIndex:9999},className:"bg-green-600 text-white rounded-2xl px-6 py-3 text-sm font-semibold shadow-xl"},"✅ Saved! Add another one."),
+    React.createElement("div",{className:"bg-white rounded-xl border px-4 py-3 flex items-center gap-2 flex-wrap"},
+      React.createElement("span",{className:"text-xs text-gray-400 italic"},"✨ Fields are auto-translated to English on submit"),
+      React.createElement("span",{className:"ml-auto"},React.createElement(SyncBadge,{status:syncStatus}))
+    ),
+    React.createElement(Section,{step:"1",bgColor:"bg-indigo-700",emoji:"🔍",label:"The Requirement",sublabel:"Capture what happened while it's fresh. Write in any language."},
+      React.createElement(Field,{label:"What broke, slowed down or is missing?",required:true,tipKey:"problem"},
+        React.createElement("textarea",{className:ta,rows:2,value:form.problem,onChange:function(e){f("problem",e.target.value);},placeholder:"Describe the symptom in one sentence."})
+      ),
+      React.createElement(Field,{label:"Additional context & roleplay evidence",required:true,tipKey:"roleplay"},
+        React.createElement("textarea",{className:ta,rows:4,value:form.roleplayExample,onChange:function(e){f("roleplayExample",e.target.value);},placeholder:"Walk through what happened step by step. Who did what, what went wrong, what was the cost?"})
+      ),
+      React.createElement(Field,{label:"How often does this happen in real production?",required:true,tipKey:"frequency"},
+        React.createElement("div",{className:"grid grid-cols-2 gap-2 sm:grid-cols-4"},
+          FREQUENCIES.map(function(fr){
+            var m=FREQ_META[fr]; var active=form.frequency===fr;
+            var cls=active?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-600 hover:border-indigo-300";
+            return React.createElement("button",{key:fr,onClick:function(){f("frequency",fr);},className:"flex flex-col items-center gap-1 p-3 rounded-xl border-2 text-center transition-all "+cls},
+              React.createElement("span",{className:"text-lg"},m.emoji),
+              React.createElement("span",{className:"text-xs font-bold"},fr),
+              React.createElement("span",{className:"text-xs "+(active?"text-indigo-200":"text-gray-400")},m.desc)
+            );
+          })
+        )
+      ),
+      React.createElement(Field,{label:"Where in the pipeline does this happen?",tipKey:"pipelineStage"},
+        React.createElement("select",{className:selCls,value:form.pipelineStage,onChange:function(e){f("pipelineStage",e.target.value);}},
+          React.createElement("option",{value:""},"Select a stage…"),
+          PIPELINE_STAGES.map(function(s){return React.createElement("option",{key:s},s);})
+        )
+      )
+    ),
+    React.createElement(Section,{step:"2",bgColor:"bg-rose-600",emoji:"💥",label:"The Impact",sublabel:"Who suffers and what is it costing right now?"},
+      React.createElement(Field,{label:"Who feels the pain directly?",tipKey:"stakeholders"},
+        React.createElement(MultiChips,{options:STAKEHOLDERS,selected:form.stakeholders,onChange:function(v){f("stakeholders",v);}})
+      ),
+      React.createElement(Field,{label:"What's the real cost of not fixing this?",tipKey:"consequences"},
+        React.createElement(MultiChips,{options:CONSEQUENCES,selected:form.consequences,onChange:function(v){f("consequences",v);}})
+      ),
+      React.createElement(Field,{label:"How is the team handling this today?",tipKey:"workaround"},
+        React.createElement("textarea",{className:ta,rows:2,value:form.workaround,onChange:function(e){f("workaround",e.target.value);},placeholder:"Describe the steps the team takes to work around this."})
+      )
+    ),
+    React.createElement(Section,{step:"3",bgColor:"bg-violet-600",emoji:"🤖",label:"Agent Potential",sublabel:"Could AI handle this step?"},
+      React.createElement(Field,{label:"If we were to automate this, what level makes sense?",tipKey:"agentPotential"},
+        React.createElement("div",{className:"space-y-2"},
+          AGENT_POTENTIALS.map(function(ap){
+            var m=AGENT_META[ap]; var active=form.agentPotential===ap;
+            var cls=active?"bg-violet-600 border-violet-600 text-white":"bg-white border-gray-200 hover:border-violet-300";
+            return React.createElement("button",{key:ap,onClick:function(){f("agentPotential",ap);},className:"w-full flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all "+cls},
+              React.createElement("span",{className:"text-xl flex-shrink-0"},m.emoji),
+              React.createElement("div",null,
+                React.createElement("p",{className:"text-sm font-bold "+(active?"text-white":"text-gray-800")},ap),
+                React.createElement("p",{className:"text-xs mt-0.5 "+(active?"text-violet-200":"text-gray-500")},m.desc)
+              ),
+              active && React.createElement("span",{className:"ml-auto text-white"},"✓")
+            );
+          })
+        )
+      )
+    ),
+    React.createElement(Section,{step:"4",bgColor:"bg-emerald-600",emoji:"🎯",label:"Definition of Solved",sublabel:"What does success look like?"},
+      React.createElement(Field,{label:"How would we know this is fixed?",required:true,tipKey:"definition"},
+        React.createElement("textarea",{className:ta,rows:4,value:form.definition,onChange:function(e){f("definition",e.target.value);},placeholder:"Describe what day-to-day looks like when this no longer exists."})
+      )
+    ),
+    React.createElement("button",{onClick:submit,disabled:!canSubmit||saving,className:"w-full bg-indigo-600 text-white rounded-xl py-4 font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-md"},
+      saving?"✨ Translating & saving…":canSubmit?"Submit Requirement ✓":"Complete required fields to submit"
+    ),
+    !canSubmit && React.createElement("p",{className:"text-xs text-center text-gray-400"},"Still needed: "+missing.join(" · "))
+  );
 }
 
 // ── Requirements Tab ─────────────────────────────────────────
-function RequirementsTab(props){
+function RequirementsTab(props) {
   var reqs=props.reqs; var user=props.user; var onUpdate=props.onUpdate; var onDelete=props.onDelete; var syncStatus=props.syncStatus;
-  var _e=useState(null); var expanded=_e[0]; var setExpanded=_e[1];
-  var _ed=useState(null); var editing=_ed[0]; var setEditing=_ed[1];
-  var _ef=useState(null); var editForm=_ef[0]; var setEditForm=_ef[1];
-  var _ft=useState(user.team); var fTeam=_ft[0]; var setFTeam=_ft[1];
-  var _fs=useState("All"); var fStage=_fs[0]; var setFStage=_fs[1];
-  var filtered=reqs.filter(function(r){return (fTeam==="All"||r.team===fTeam)&&(fStage==="All"||r.pipelineStage===fStage);});
-  var ranked=filtered.slice().sort(function(a,b){return getScore(b)-getScore(a);});
-  var top5ids=top5ByTeam(reqs,fTeam==="All"?user.team:fTeam).map(function(r){return r.id;});
-  var ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
-  return <div className="space-y-4">
-    <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center">
-      <span className="text-xs font-semibold text-gray-500">Filter:</span>
-      <select className="border rounded-lg px-2 py-1.5 text-xs" value={fTeam} onChange={function(e){setFTeam(e.target.value);}}><option value="All">All Teams</option>{TEAMS.map(function(t){return <option key={t}>{t}</option>;})}</select>
-      <select className="border rounded-lg px-2 py-1.5 text-xs" value={fStage} onChange={function(e){setFStage(e.target.value);}}><option value="All">All Stages</option>{PIPELINE_STAGES.map(function(s){return <option key={s}>{s}</option>;})}</select>
-      <span className="ml-auto flex items-center gap-2"><SyncBadge status={syncStatus}/><span className="text-xs text-gray-400">{ranked.length} item{ranked.length!==1?"s":""}</span></span>
-    </div>
-    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700"><p className="font-bold mb-1">⭐ Rate your team's requirements</p><p>Expand each card to score it. The <strong>top 5 by score</strong> will be presented tomorrow.</p></div>
-    {ranked.length===0
-      ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-      :ranked.map(function(r){
-        var tc=teamColor(r.team); var isOwner=r.team===user.team; var isEditing=editing===r.id; var score=getScore(r);
-        var isTop5=top5ids.includes(r.id)&&score>0;
-        return <div key={r.id} className={"bg-white rounded-xl border shadow-sm overflow-hidden"+(isTop5?" border-l-4 border-l-indigo-500":"")}>
-          <div className="p-4 cursor-pointer hover:bg-gray-50" onClick={function(){if(!isEditing)setExpanded(expanded===r.id?null:r.id);}}>
-            <div className="flex items-start gap-3">
-              {isTop5&&<div className="flex-shrink-0 mt-0.5 text-lg">🏆</div>}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  <Badge cls={tc.badge}>{r.team}</Badge>
-                  {r.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {r.submittedBy}</Badge>}
-                  {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
-                  {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
-                  {score>0&&<Badge cls="bg-slate-100 text-slate-700">⭐ {score}/20</Badge>}
-                </div>
-              </div>
-              <span className="text-gray-300 text-lg mt-0.5">{expanded===r.id?"▲":"▼"}</span>
-            </div>
-          </div>
-          {expanded===r.id&&!isEditing&&<div className="border-t bg-slate-50 p-4 space-y-4">
-            {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              {r.stakeholders&&r.stakeholders.length>0&&<div><span className="font-semibold text-gray-600">Affected: </span>{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</div>}
-              {r.consequences&&r.consequences.length>0&&<div><span className="font-semibold text-gray-600">Cost: </span>{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</div>}
-              {r.agentPotential&&<div><span className="font-semibold text-gray-600">Agent: </span>{r.agentPotential}</div>}
-              {r.workaround&&<div className="col-span-2"><span className="font-semibold text-gray-600">Workaround: </span>{r.workaround}</div>}
-            </div>
-            {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-            {isOwner&&<div className="bg-white rounded-xl border p-4 space-y-3">
-              <p className="text-xs font-black text-gray-700 uppercase tracking-wide">⭐ Rate this requirement</p>
-              <div className="grid grid-cols-2 gap-4">
-                <ScorePicker label="Impact" emoji="💥" color="blue" value={r.impactScore||0} onChange={function(v){onUpdate(r.id,{impactScore:v});}} desc="How severe is the pain?"/>
-                <ScorePicker label="Frequency" emoji="🔁" color="orange" value={r.frequencyScore||0} onChange={function(v){onUpdate(r.id,{frequencyScore:v});}} desc="How often in real production?"/>
-                <ScorePicker label="Risk" emoji="⚠️" color="red" value={r.riskScore||0} onChange={function(v){onUpdate(r.id,{riskScore:v});}} desc="Cost of NOT fixing this?"/>
-                <ScorePicker label="Strategic leverage" emoji="🚀" color="indigo" value={r.leverageScore||0} onChange={function(v){onUpdate(r.id,{leverageScore:v});}} desc="Does this unlock scale or AI?"/>
-              </div>
-              {score>0&&<div className="flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span><span className={"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")}>Total: {score}/20 — {autoBucket(score)}</span></div>}
-            </div>}
-            {isOwner&&<div className="flex gap-2 pt-1">
-              <button onClick={function(){setEditing(r.id);setEditForm(Object.assign({},r));}} className="flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50">✏️ Edit</button>
-              <button onClick={function(){onDelete(r.id);}} className="py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50">🗑️ Delete</button>
-            </div>}
-          </div>}
-          {isEditing&&editForm&&<div className="border-t bg-slate-50 p-4 space-y-3">
-            <p className="text-xs font-bold text-gray-600">✏️ Editing — auto-translates to English on save</p>
-            <textarea className={ta} rows={2} value={editForm.problem} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});}} placeholder="Problem"/>
-            <textarea className={ta} rows={3} value={editForm.roleplayExample} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});}} placeholder="Context & evidence"/>
-            <textarea className={ta} rows={2} value={editForm.definition} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});}} placeholder="Definition of solved"/>
-            <div className="flex gap-2">
-              <button onClick={async function(){var t=await gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition});await onUpdate(editForm.id,Object.assign({},editForm,t));setEditing(null);setEditForm(null);}} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">💾 Save & Translate</button>
-              <button onClick={function(){setEditing(null);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button>
-            </div>
-          </div>}
-        </div>;
-      })
-    }
-  </div>;
+  var s1=useState(null); var expanded=s1[0]; var setExpanded=s1[1];
+  var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
+  var s3=useState(null); var editForm=s3[0]; var setEditForm=s3[1];
+  var s4=useState(user.team); var fTeam=s4[0]; var setFTeam=s4[1];
+  var s5=useState("All"); var fStage=s5[0]; var setFStage=s5[1];
+  var filtered = reqs.filter(function(r){return (fTeam==="All"||r.team===fTeam)&&(fStage==="All"||r.pipelineStage===fStage);});
+  var ranked = sortedByScore(filtered);
+  var myTeamReqs = reqs.filter(function(r){return r.team===(fTeam==="All"?user.team:fTeam);});
+  var top5ids = sortedByScore(myTeamReqs).slice(0,5).filter(function(r){return getScore(r)>0;}).map(function(r){return r.id;});
+  var ta = "w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
+  return React.createElement("div",{className:"space-y-4"},
+    React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center"},
+      React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Filter:"),
+      React.createElement("select",{className:"border rounded-lg px-2 py-1.5 text-xs",value:fTeam,onChange:function(e){setFTeam(e.target.value);}},
+        React.createElement("option",{value:"All"},"All Teams"),
+        TEAMS.map(function(t){return React.createElement("option",{key:t},t);})
+      ),
+      React.createElement("select",{className:"border rounded-lg px-2 py-1.5 text-xs",value:fStage,onChange:function(e){setFStage(e.target.value);}},
+        React.createElement("option",{value:"All"},"All Stages"),
+        PIPELINE_STAGES.map(function(s){return React.createElement("option",{key:s},s);})
+      ),
+      React.createElement("span",{className:"ml-auto flex items-center gap-2"},
+        React.createElement(SyncBadge,{status:syncStatus}),
+        React.createElement("span",{className:"text-xs text-gray-400"},ranked.length+" items")
+      )
+    ),
+    React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700"},
+      React.createElement("p",{className:"font-bold mb-1"},"⭐ Rate your team's requirements"),
+      React.createElement("p",null,"Expand each card to score it. The top 5 by score will be presented tomorrow.")
+    ),
+    ranked.length===0
+      ? React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet."))
+      : ranked.map(function(r) {
+          var tc=teamColor(r.team); var isOwner=r.team===user.team; var isEditing=editing===r.id; var score=getScore(r);
+          var isTop5=top5ids.includes(r.id); var cat=getCategory(r);
+          return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(isTop5?" border-l-4 border-l-indigo-500":"")},
+            React.createElement("div",{className:"p-4 cursor-pointer hover:bg-gray-50",onClick:function(){if(!isEditing)setExpanded(expanded===r.id?null:r.id);}},
+              React.createElement("div",{className:"flex items-start gap-3"},
+                isTop5 && React.createElement("div",{className:"flex-shrink-0 mt-0.5 text-lg"},"🏆"),
+                React.createElement("div",{className:"flex-1 min-w-0"},
+                  React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),
+                  React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-2"},
+                    React.createElement(Badge,{cls:tc.badge},r.team),
+                    r.submittedBy && React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),
+                    r.frequency && React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),
+                    cat && React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),
+                    score>0 && React.createElement(Badge,{cls:"bg-slate-100 text-slate-700"},"⭐ "+score+"/20"),
+                    r.easyWin && React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win")
+                  )
+                ),
+                React.createElement("span",{className:"text-gray-300 text-lg mt-0.5"},expanded===r.id?"▲":"▼")
+              )
+            ),
+            expanded===r.id && !isEditing && React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-4"},
+              r.roleplayExample && React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+              React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs"},
+                r.stakeholders&&r.stakeholders.length>0 && React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),
+                r.consequences&&r.consequences.length>0 && React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),
+                r.agentPotential && React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Agent: "),r.agentPotential),
+                r.workaround && React.createElement("div",{className:"col-span-2"},React.createElement("span",{className:"font-semibold text-gray-600"},"Workaround: "),r.workaround)
+              ),
+              r.definition && React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
+              isOwner && React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
+                React.createElement("p",{className:"text-xs font-black text-gray-700 uppercase tracking-wide"},"⭐ Rate this requirement"),
+                React.createElement("div",{className:"grid grid-cols-2 gap-4"},
+                  React.createElement(ScorePicker,{label:"Impact",emoji:"💥",color:"blue",value:r.impactScore||0,onChange:function(v){onUpdate(r.id,{impactScore:v});},desc:"How severe is the pain?"}),
+                  React.createElement(ScorePicker,{label:"Frequency",emoji:"🔁",color:"orange",value:r.frequencyScore||0,onChange:function(v){onUpdate(r.id,{frequencyScore:v});},desc:"How often in real production?"}),
+                  React.createElement(ScorePicker,{label:"Risk",emoji:"⚠️",color:"red",value:r.riskScore||0,onChange:function(v){onUpdate(r.id,{riskScore:v});},desc:"Cost of NOT fixing this?"}),
+                  React.createElement(ScorePicker,{label:"Strategic leverage",emoji:"🚀",color:"indigo",value:r.leverageScore||0,onChange:function(v){onUpdate(r.id,{leverageScore:v});},desc:"Does this unlock scale or AI?"})
+                ),
+                score>0 && React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"},
+                  React.createElement("span",null,"💥"+(r.impactScore||0)),
+                  React.createElement("span",null,"🔁"+(r.frequencyScore||0)),
+                  React.createElement("span",null,"⚠️"+(r.riskScore||0)),
+                  React.createElement("span",null,"🚀"+(r.leverageScore||0)),
+                  React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Total: "+score+"/20 — "+autoBucket(score))
+                ),
+                React.createElement("div",{className:"flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all "+(r.easyWin?"bg-green-50 border-green-400":"border-gray-200 hover:border-green-300"),onClick:function(){onUpdate(r.id,{easyWin:!r.easyWin});}},
+                  React.createElement("div",{className:"w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(r.easyWin?"bg-green-500 border-green-500":"border-gray-300")},
+                    r.easyWin && React.createElement("span",{className:"text-white text-xs font-bold"},"✓")
+                  ),
+                  React.createElement("div",{className:"flex-1"},
+                    React.createElement("div",{className:"flex items-center gap-1.5"},
+                      React.createElement("p",{className:"text-sm font-bold "+(r.easyWin?"text-green-700":"text-gray-700")},"⚡ Easy win"),
+                      React.createElement(EasyWinTooltip,null)
+                    ),
+                    React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Mark if scope is clear and no deep analysis needed")
+                  ),
+                  r.easyWin && React.createElement("span",{className:"text-green-500 text-xs font-bold flex-shrink-0"},"Marked")
+                )
+              ),
+              isOwner && React.createElement("div",{className:"flex gap-2 pt-1"},
+                React.createElement("button",{onClick:function(){setEditing(r.id);setEditForm(Object.assign({},r));},className:"flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50"},"✏️ Edit"),
+                React.createElement("button",{onClick:function(){onDelete(r.id);},className:"py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50"},"🗑️ Delete")
+              )
+            ),
+            isEditing && editForm && React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+              React.createElement("p",{className:"text-xs font-bold text-gray-600"},"✏️ Editing — auto-translates to English on save"),
+              React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
+              React.createElement("textarea",{className:ta,rows:3,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
+              React.createElement("textarea",{className:ta,rows:2,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
+              React.createElement("div",{className:"flex gap-2"},
+                React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(null);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),
+                React.createElement("button",{onClick:function(){setEditing(null);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel")
+              )
+            )
+          );
+        })
+  );
 }
 
 // ── Read-Out Tab ─────────────────────────────────────────────
-function ReadOutTab(props){
+function ReadOutTab(props) {
   var reqs=props.reqs; var onUpdate=props.onUpdate;
-  var _at=useState(TEAMS[0]); var activeTeam=_at[0]; var setActiveTeam=_at[1];
-  var _cu=useState(0); var cursor=_cu[0]; var setCursor=_cu[1];
-  var _ed=useState(false); var editing=_ed[0]; var setEditing=_ed[1];
-  var _ef=useState(null); var editForm=_ef[0]; var setEditForm=_ef[1];
-  var activeTeams=[...new Set(reqs.map(function(r){return r.team;}))];
-  var teamReqs=top5ByTeam(reqs,activeTeam);
-  var current=teamReqs[cursor];
-  var tc=teamColor(activeTeam);
-  var score=current?getScore(current):0;
-  var ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
-  return <div className="space-y-4">
-    <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2">
-      {activeTeams.map(function(t){var c=teamColor(t);return <button key={t} onClick={function(){setActiveTeam(t);setCursor(0);setEditing(false);}} className={"px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all "+(activeTeam===t?c.light:"border-gray-200 text-gray-500")}>{t}</button>;})}
-    </div>
-    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-700 flex items-center gap-2"><span>📋</span><span>All requirements ordered by score, grouped by team</span></div>
-    {teamReqs.length===0
-      ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No scored requirements from {activeTeam} yet.</p></div>
-      :<div className="space-y-4">
-        {current&&!editing&&<div className="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2 flex-wrap"><Badge cls={tc.badge}>{current.team}</Badge>{current.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {current.submittedBy}</Badge>}<span className="text-xs font-bold text-gray-400">#{cursor+1} of {teamReqs.length}</span></div>
-            <button onClick={function(){setEditing(true);setEditForm(Object.assign({},current));}} className="text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0">✏️ Edit</button>
-          </div>
-          <p className="text-xl font-black text-gray-900 leading-snug">{current.problem}</p>
-          <div className="flex flex-wrap gap-2">
-            {current.frequency&&<div className="flex gap-1.5 items-center"><span className="text-lg">{FREQ_META[current.frequency]&&FREQ_META[current.frequency].emoji}</span><span className="text-sm font-semibold text-gray-600">{current.frequency}</span></div>}
-            {current.agentPotential&&<Badge cls={agentBadge(current.agentPotential)}>{current.agentPotential}</Badge>}
-            {current.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{current.pipelineStage}</Badge>}
-          </div>
-          {current.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-4"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-sm text-amber-900 leading-relaxed">{current.roleplayExample}</p></div>}
-          {current.workaround&&<div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><p className="text-xs font-bold text-slate-600 mb-1">🔧 Current workaround</p><p className="text-sm text-slate-700">{current.workaround}</p></div>}
-          {current.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-sm text-emerald-900 leading-relaxed">{current.definition}</p></div>}
-          {score>0&&<div className="bg-white border rounded-xl p-3 flex flex-wrap gap-4 text-xs text-gray-500">
-            <span>💥 Impact: <strong>{current.impactScore||0}</strong></span>
-            <span>🔁 Frequency: <strong>{current.frequencyScore||0}</strong></span>
-            <span>⚠️ Risk: <strong>{current.riskScore||0}</strong></span>
-            <span>🚀 Leverage: <strong>{current.leverageScore||0}</strong></span>
-            <span className={"font-black ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")}>{score}/20 · {autoBucket(score)}</span>
-          </div>}
-        </div>}
-        {current&&editing&&editForm&&<div className="bg-white rounded-2xl border-2 border-indigo-300 shadow-lg p-6 space-y-4">
-          <div className="flex items-center justify-between"><p className="text-sm font-black text-gray-800">✏️ Editing card</p><span className="text-xs text-gray-400 italic">Auto-translates to English</span></div>
-          <textarea className={ta} rows={2} value={editForm.problem} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});}} placeholder="Problem"/>
-          <textarea className={ta} rows={4} value={editForm.roleplayExample} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});}} placeholder="Context & evidence"/>
-          <textarea className={ta} rows={2} value={editForm.workaround} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{workaround:e.target.value});});}} placeholder="Workaround"/>
-          <textarea className={ta} rows={3} value={editForm.definition} onChange={function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});}} placeholder="Definition of solved"/>
-          <div className="flex gap-2">
-            <button onClick={async function(){var t=await gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition});await onUpdate(editForm.id,Object.assign({},editForm,t));setEditing(false);setEditForm(null);}} className="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">💾 Save & Translate</button>
-            <button onClick={function(){setEditing(false);setEditForm(null);}} className="flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500">Cancel</button>
-          </div>
-        </div>}
-        <div className="flex gap-3">
-          <button onClick={function(){setCursor(function(c){return Math.max(0,c-1);});setEditing(false);}} disabled={cursor===0} className="flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50">← Previous</button>
-          <button onClick={function(){setCursor(function(c){return Math.min(teamReqs.length-1,c+1);});setEditing(false);}} disabled={cursor===teamReqs.length-1} className="flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50">Next →</button>
-        </div>
-        <div className="space-y-1">{teamReqs.map(function(r,i){var s=getScore(r);return <button key={r.id} onClick={function(){setCursor(i);setEditing(false);}} className={"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")}><span className="font-black text-gray-300 w-4">#{i+1}</span><span className={"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")}>{r.problem}</span><span className={"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")}>{s}pts</span></button>; })}</div>
-      </div>
-    }
-  </div>;
+  var s1=useState(TEAMS[0]); var activeTeam=s1[0]; var setActiveTeam=s1[1];
+  var s2=useState(0); var cursor=s2[0]; var setCursor=s2[1];
+  var s3=useState(false); var editing=s3[0]; var setEditing=s3[1];
+  var s4=useState(null); var editForm=s4[0]; var setEditForm=s4[1];
+  var s5=useState(false); var showEW=s5[0]; var setShowEW=s5[1];
+  var activeTeams = Array.from(new Set(reqs.map(function(r){return r.team;})));
+  var allTeamReqs = sortedByScore(reqs.filter(function(r){return r.team===activeTeam;}));
+  var teamReqs = showEW ? allTeamReqs : allTeamReqs.filter(function(r){return !r.easyWin;});
+  var ewCount = allTeamReqs.filter(function(r){return r.easyWin;}).length;
+  var current = teamReqs[cursor];
+  var tc = teamColor(activeTeam);
+  var score = current ? getScore(current) : 0;
+  var ta = "w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
+  return React.createElement("div",{className:"space-y-4"},
+    React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2"},
+      activeTeams.map(function(t){var c=teamColor(t);return React.createElement("button",{key:t,onClick:function(){setActiveTeam(t);setCursor(0);setEditing(false);},className:"px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all "+(activeTeam===t?c.light:"border-gray-200 text-gray-500")},t);})
+    ),
+    React.createElement("div",{className:"flex items-center gap-3"},
+      React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-700 flex items-center gap-2 flex-1"},
+        React.createElement("span",null,"📋"),React.createElement("span",null,"All requirements ordered by score")
+      ),
+      ewCount>0 && React.createElement("button",{onClick:function(){setCursor(0);setEditing(false);setShowEW(function(s){return !s;});},className:"text-xs px-3 py-2 rounded-xl border-2 font-bold transition-all flex-shrink-0 "+(showEW?"bg-green-500 border-green-500 text-white":"border-green-300 text-green-600 hover:bg-green-50")},
+        showEW?"⚡ Hiding easy wins":"⚡ Show easy wins ("+ewCount+")"
+      )
+    ),
+    teamReqs.length===0
+      ? React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},allTeamReqs.length>0?"All requirements are easy wins — toggle to show them.":"No requirements from "+activeTeam+" yet."))
+      : React.createElement("div",{className:"space-y-4"},
+          current && !editing && React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4"},
+            React.createElement("div",{className:"flex items-start justify-between gap-3"},
+              React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},
+                React.createElement(Badge,{cls:tc.badge},current.team),
+                current.submittedBy && React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+current.submittedBy),
+                current.easyWin && React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),
+                React.createElement("span",{className:"text-xs font-bold text-gray-400"},"#"+(cursor+1)+" of "+teamReqs.length)
+              ),
+              React.createElement("button",{onClick:function(){setEditing(true);setEditForm(Object.assign({},current));},className:"text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0"},"✏️ Edit")
+            ),
+            React.createElement("p",{className:"text-xl font-black text-gray-900 leading-snug"},current.problem),
+            React.createElement("div",{className:"flex flex-wrap gap-2"},
+              current.frequency && React.createElement("div",{className:"flex gap-1.5 items-center"},React.createElement("span",{className:"text-lg"},FREQ_META[current.frequency]&&FREQ_META[current.frequency].emoji),React.createElement("span",{className:"text-sm font-semibold text-gray-600"},current.frequency)),
+              current.agentPotential && React.createElement(Badge,{cls:agentBadge(current.agentPotential)},current.agentPotential),
+              current.pipelineStage && React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},current.pipelineStage),
+              getCategory(current) && React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},getCategory(current))
+            ),
+            current.roleplayExample && React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-sm text-amber-900 leading-relaxed"},current.roleplayExample)),
+            current.workaround && React.createElement("div",{className:"bg-slate-50 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-sm text-slate-700"},current.workaround)),
+            current.definition && React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-sm text-emerald-900 leading-relaxed"},current.definition)),
+            score>0 && React.createElement("div",{className:"bg-white border rounded-xl p-3 flex flex-wrap gap-4 text-xs text-gray-500"},
+              React.createElement("span",null,"💥 Impact: ",React.createElement("strong",null,current.impactScore||0)),
+              React.createElement("span",null,"🔁 Frequency: ",React.createElement("strong",null,current.frequencyScore||0)),
+              React.createElement("span",null,"⚠️ Risk: ",React.createElement("strong",null,current.riskScore||0)),
+              React.createElement("span",null,"🚀 Leverage: ",React.createElement("strong",null,current.leverageScore||0)),
+              React.createElement("span",{className:"font-black ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},score+"/20 · "+autoBucket(score))
+            )
+          ),
+          current && editing && editForm && React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-300 shadow-lg p-6 space-y-4"},
+            React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-black text-gray-800"},"✏️ Editing card"),React.createElement("span",{className:"text-xs text-gray-400 italic"},"Auto-translates to English")),
+            React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
+            React.createElement("textarea",{className:ta,rows:4,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
+            React.createElement("textarea",{className:ta,rows:2,value:editForm.workaround,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{workaround:e.target.value});});},placeholder:"Workaround"}),
+            React.createElement("textarea",{className:ta,rows:3,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
+            React.createElement("div",{className:"flex gap-2"},
+              React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(false);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),
+              React.createElement("button",{onClick:function(){setEditing(false);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel")
+            )
+          ),
+          React.createElement("div",{className:"flex gap-3"},
+            React.createElement("button",{onClick:function(){setCursor(function(c){return Math.max(0,c-1);});setEditing(false);},disabled:cursor===0,className:"flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50"},"← Previous"),
+            React.createElement("button",{onClick:function(){setCursor(function(c){return Math.min(teamReqs.length-1,c+1);});setEditing(false);},disabled:cursor===teamReqs.length-1,className:"flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50"},"Next →")
+          ),
+          React.createElement("div",{className:"space-y-1"},
+            teamReqs.map(function(r,i){
+              var s=getScore(r);
+              return React.createElement("button",{key:r.id,onClick:function(){setCursor(i);setEditing(false);},className:"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")},
+                React.createElement("span",{className:"font-black text-gray-300 w-4"},"#"+(i+1)),
+                React.createElement("span",{className:"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")},r.problem),
+                r.easyWin && React.createElement("span",{className:"text-green-500 text-xs"},"⚡"),
+                React.createElement("span",{className:"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")},s+"pts")
+              );
+            })
+          )
+        )
+  );
 }
 
 // ── Synthesis & Vote Tab ─────────────────────────────────────
-function SynthesisVoteTab(props){
+function SynthesisVoteTab(props) {
   var reqs=props.reqs; var votes=props.votes; var votingClosed=props.votingClosed;
   var user=props.user; var onVote=props.onVote; var onCloseVoting=props.onCloseVoting;
   var onResetVoting=props.onResetVoting; var onUpdateReq=props.onUpdateReq;
-  var _e=useState(null); var expanded=_e[0]; var setExpanded=_e[1];
-  var vid=voterId(user);
-  var myVotes=votes[vid]||{};
-  var myVotesList=Object.entries(myVotes).map(function(e){return {id:e[0],pts:Number(e[1])};});
-  var myTotalUsed=myVotesList.reduce(function(s,v){return s+v.pts;},0);
-  var MAX_VOTES=3;
+  var s1=useState(null); var expanded=s1[0]; var setExpanded=s1[1];
+  var vid = voterId(user);
+  var myVotes = votes[vid]||{};
+  var myTotal = Object.values(myVotes).reduce(function(s,v){return s+Number(v);},0);
+  var MAX = 3;
   function getMyVote(id){return myVotes[String(id)]||0;}
-  function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=(Number(v[String(id)])||0);});return t;}
-  var allPeople=Object.values(TEAM_MEMBERS).flat();
-  var totalPeople=allPeople.length;
-  var votedCount=allPeople.filter(function(n){var v=n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");return Object.keys(votes[v]||{}).length>0;}).length;
-  var teamVotedStatus=TEAMS.map(function(t){var members=TEAM_MEMBERS[t]||[];var voted=members.filter(function(n){var v=n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");return Object.keys(votes[v]||{}).length>0;});return {team:t,voted:voted.length,total:members.length};});
-  var ranked=reqs.slice().sort(function(a,b){return getScore(b)-getScore(a);});
+  function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=Number(v[String(id)])||0;});return t;}
+  var allPeople = Object.values(TEAM_MEMBERS).reduce(function(a,b){return a.concat(b);});
+  var totalPeople = allPeople.length;
+  var votedCount = allPeople.filter(function(n){var v=n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");return Object.keys(votes[v]||{}).length>0;}).length;
+  var teamStatus = TEAMS.map(function(t){var members=TEAM_MEMBERS[t]||[];var voted=members.filter(function(n){var v=n.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");return Object.keys(votes[v]||{}).length>0;});return {team:t,voted:voted.length,total:members.length};});
+  var ranked = sortedByScore(reqs.filter(function(r){return !r.easyWin;}));
+  var medals = ["🥇","🥈","🥉"];
 
-  var ranked=reqs.slice().sort(function(a,b){return getScore(b)-getScore(a);});
-  var medals=["🥇","🥈","🥉"];
-
-  if(votingClosed){
-    var results=reqs.slice().map(function(r){return Object.assign({},r,{totalVotes:getTotalVotes(r.id),selfScore:getScore(r)});}).sort(function(a,b){return (b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore);});
-    return <div className="space-y-4">
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"><span className="text-2xl">🏁</span><div><p className="text-sm font-bold text-emerald-700">Voting closed — final ranking</p><p className="text-xs text-emerald-600">Sorted by votes + self-score</p></div></div>
-      {results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return <div key={r.id} className={"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")}>
-        <div className="p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50" onClick={function(){setExpanded(expanded===r.id?null:r.id);}}>
-          <div className="text-2xl w-8 text-center flex-shrink-0">{medals[i]||("#"+(i+1))}</div>
-          <div className="flex-1 min-w-0 space-y-1">
-            <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-            <div className="flex flex-wrap gap-1.5"><Badge cls={tc.badge}>{r.team}</Badge><span className={"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)}>{bucket}</span></div>
-            <div className="flex gap-3 text-xs text-gray-500 pt-1"><span>🗳️ {r.totalVotes} vote pts</span><span>⭐ {s} self-score</span><span className="font-bold text-indigo-600 ml-auto">Combined: {r.totalVotes+s}</span></div>
-          </div>
-          <span className="text-gray-300">{expanded===r.id?"▲":"▼"}</span>
-        </div>
-        {expanded===r.id&&<div className="border-t bg-slate-50 p-4 space-y-3">
-          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
-          {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-          <div className="bg-white rounded-xl border p-3 space-y-2">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">📌 Optional classification</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div><p className="text-xs font-bold text-gray-600 mb-1">🗂️ Cluster</p><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={function(v){onUpdateReq(r.id,{cluster:v});}} placeholder="Select cluster…"/></div>
-              <div><p className="text-xs font-bold text-gray-600 mb-1">🏷️ Category</p><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={function(v){onUpdateReq(r.id,{category:v});}} placeholder="Select category…"/></div>
-            </div>
-          </div>
-        </div>}
-      </div>;})}
-      <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50">🔄 Reset voting</button>
-    </div>;
+  if (votingClosed) {
+    var results = reqs.filter(function(r){return !r.easyWin;}).map(function(r){return Object.assign({},r,{totalVotes:getTotalVotes(r.id),selfScore:getScore(r)});}).sort(function(a,b){return (b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore);});
+    return React.createElement("div",{className:"space-y-4"},
+      React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"},React.createElement("span",{className:"text-2xl"},"🏁"),React.createElement("div",null,React.createElement("p",{className:"text-sm font-bold text-emerald-700"},"Voting closed — final ranking"),React.createElement("p",{className:"text-xs text-emerald-600"},"Sorted by votes + self-score"))),
+      results.map(function(r,i){
+        var tc=teamColor(r.team); var s=getScore(r); var bucket=autoBucket(s);
+        return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},
+          React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},
+            React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),
+            React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},
+              React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),
+              React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket)),
+              React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))
+            ),
+            React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")
+          ),
+          expanded===r.id && React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+            r.roleplayExample && React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+            r.definition && React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))
+          )
+        );
+      }),
+      React.createElement("button",{onClick:onResetVoting,className:"w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50"},"🔄 Reset voting")
+    );
   }
 
-  return <div className="space-y-4">
-    <div className="bg-white rounded-xl border p-4 space-y-2">
-      <p className="text-xs font-bold text-gray-600">📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)</p>
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-rose-600">🔥 Must-fix</p><p className="text-xs font-bold text-gray-700">16–20</p><p className="text-xs text-gray-400">avg 4+</p></div>
-        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-amber-600">📈 Scale enabler</p><p className="text-xs font-bold text-gray-700">10–15</p><p className="text-xs text-gray-400">avg 2.5–3.75</p></div>
-        <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"><p className="text-xs font-black text-indigo-600">🚀 Strategic bet</p><p className="text-xs font-bold text-gray-700">1–9</p><p className="text-xs text-gray-400">below 2.5</p></div>
-      </div>
-    </div>
-    <div className="bg-white rounded-xl border p-4 space-y-2">
-      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-800">🗳️ Your votes</p><span className="text-xs font-bold text-indigo-600">{myTotalUsed}/{MAX_VOTES} used</span></div>
-      <p className="text-xs text-gray-500">Each person has <strong>3 votes</strong>. You can put all 3 on one item or spread them.</p>
-      <div className="flex gap-1.5">{[0,1,2].map(function(i){return <div key={i} className={"flex-1 h-2 rounded-full "+(i<myTotalUsed?"bg-indigo-500":"bg-gray-200")}/>;})}</div>
-      <div className="flex items-center justify-between text-xs text-gray-400"><span>{votedCount} of {totalPeople} people voted</span>{myTotalUsed>0&&<span className="text-indigo-500 font-semibold">{MAX_VOTES-myTotalUsed} remaining</span>}</div>
-    </div>
-    {ranked.map(function(r){
+  return React.createElement("div",{className:"space-y-4"},
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
+      React.createElement("p",{className:"text-xs font-bold text-gray-600"},"📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)"),
+      React.createElement("div",{className:"grid grid-cols-3 gap-2"},
+        React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-rose-600"},"🔥 Must-fix"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"16–20")),
+        React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-amber-600"},"📈 Scale enabler"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"10–15")),
+        React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-indigo-600"},"🚀 Strategic bet"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"1–9"))
+      )
+    ),
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
+      React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"🗳️ Your votes"),React.createElement("span",{className:"text-xs font-bold text-indigo-600"},myTotal+"/"+MAX+" used")),
+      React.createElement("p",{className:"text-xs text-gray-500"},"Each person has ",React.createElement("strong",null,"3 votes"),". You can put all 3 on one item or spread them."),
+      React.createElement("div",{className:"flex gap-1.5"},[0,1,2].map(function(i){return React.createElement("div",{key:i,className:"flex-1 h-2 rounded-full "+(i<myTotal?"bg-indigo-500":"bg-gray-200")});})),
+      React.createElement("div",{className:"flex items-center justify-between text-xs text-gray-400"},React.createElement("span",null,votedCount+" of "+totalPeople+" people voted"),myTotal>0&&React.createElement("span",{className:"text-indigo-500 font-semibold"},(MAX-myTotal)+" remaining"))
+    ),
+    ranked.map(function(r){
       var tc=teamColor(r.team); var score=getScore(r); var bucket=autoBucket(score);
       var myVote=getMyVote(r.id); var totalVotes=getTotalVotes(r.id);
-      var remaining=MAX_VOTES-myTotalUsed; var isOpen=expanded===r.id;
-      return <div key={r.id} className={"bg-white rounded-xl border shadow-sm overflow-hidden"+(myVote>0?" border-indigo-300 border-2":"")}>
-        <div className="p-4">
-          <div className="flex items-start gap-3 cursor-pointer" onClick={function(){setExpanded(isOpen?null:r.id);}}>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-gray-800">{r.problem}</p>
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                <Badge cls={tc.badge}>{r.team}</Badge>
-                <span className={"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)}>{bucket}</span>
-                {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-800">{r.frequency}</Badge>}
-                {r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
-              </div>
-            </div>
-            <div className="text-right flex-shrink-0">
-              <div className="text-xl font-black text-indigo-600">{score}</div>
-              <div className="text-xs text-gray-400">score</div>
-              {totalVotes>0&&<div className="text-xs font-bold text-emerald-600">{totalVotes}🗳️</div>}
-            </div>
-            <span className="text-gray-300 mt-1">{isOpen?"▲":"▼"}</span>
-          </div>
-          <div className="flex gap-2 mt-3 items-center">
-            <span className="text-xs text-gray-400 font-semibold flex-shrink-0">Vote:</span>
-            {[1,2,3].map(function(n){
-              var isActive=myVote===n; var wouldAdd=n-myVote; var canAdd=myTotalUsed+wouldAdd<=MAX_VOTES;
-              var btnCls=isActive?"bg-indigo-600 border-indigo-600 text-white":canAdd?"border-gray-200 text-gray-500 hover:border-indigo-300":"border-gray-100 text-gray-300 cursor-not-allowed";
-              return <button key={n} onClick={function(){if(isActive||canAdd)onVote(r.id,isActive?0:n);}} className={"flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all "+btnCls}>{isActive?"✓ ":""}{n} vote{n>1?"s":""}</button>;
-            })}
-            {myVote>0&&<button onClick={function(){onVote(r.id,0);}} className="px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50 flex-shrink-0">✕</button>}
-          </div>
-        </div>
-        {isOpen&&<div className="border-t bg-slate-50 p-4 space-y-3">
-          {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
-          {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-          {r.workaround&&<p className="text-xs text-gray-600"><span className="font-semibold">Workaround: </span>{r.workaround}</p>}
-          <div className="text-xs text-gray-400 flex gap-3"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span></div>
-          <div className="bg-white rounded-xl border p-3 space-y-2">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide">📌 Optional classification</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div><p className="text-xs font-bold text-gray-600 mb-1">🗂️ Cluster</p><OtherSelect options={BASE_CLUSTERS} value={r.cluster||"Unclustered"} onChange={function(v){onUpdateReq(r.id,{cluster:v});}} placeholder="Select cluster…"/></div>
-              <div><p className="text-xs font-bold text-gray-600 mb-1">🏷️ Category</p><OtherSelect options={BASE_CATEGORIES} value={r.category||""} onChange={function(v){onUpdateReq(r.id,{category:v});}} placeholder="Select category…"/></div>
-            </div>
-          </div>
-        </div>}
-      </div>;
-    })}
-    <div className="bg-white rounded-xl border p-4 space-y-3">
-      <div className="flex items-center justify-between"><p className="text-sm font-bold text-gray-700">Voting status</p><span className="text-xs text-gray-400">{votedCount}/{totalPeople} people voted</span></div>
-      {teamVotedStatus.map(function(ts){return <div key={ts.team} className="flex items-center gap-2 text-xs"><div className={"w-2 h-2 rounded-full flex-shrink-0 "+(ts.voted>0?"bg-emerald-500":"bg-gray-300")}/><span className={"flex-1 "+(ts.voted>0?"text-gray-700 font-semibold":"text-gray-400")}>{ts.team}</span><span className={ts.voted===ts.total?"text-emerald-600 font-bold":"text-gray-400"}>{ts.voted}/{ts.total} voted</span></div>;})}
-      <button onClick={onCloseVoting} className="w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700">🏁 Close voting & show results</button>
-      <button onClick={onResetVoting} className="w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50">🔄 Reset all votes</button>
-    </div>
-  </div>;
+      var remaining=MAX-myTotal; var isOpen=expanded===r.id; var cat=getCategory(r);
+      return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(myVote>0?" border-indigo-300 border-2":"")},
+        React.createElement("div",{className:"p-4"},
+          React.createElement("div",{className:"flex items-start gap-3 cursor-pointer",onClick:function(){setExpanded(isOpen?null:r.id);}},
+            React.createElement("div",{className:"flex-1 min-w-0"},
+              React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),
+              React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1.5"},
+                React.createElement(Badge,{cls:tc.badge},r.team),
+                React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),
+                cat && React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),
+                r.frequency && React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency)
+              )
+            ),
+            React.createElement("div",{className:"text-right flex-shrink-0"},
+              React.createElement("div",{className:"text-xl font-black text-indigo-600"},score),
+              React.createElement("div",{className:"text-xs text-gray-400"},"score"),
+              totalVotes>0 && React.createElement("div",{className:"text-xs font-bold text-emerald-600"},totalVotes+"🗳️")
+            ),
+            React.createElement("span",{className:"text-gray-300 mt-1"},isOpen?"▲":"▼")
+          ),
+          React.createElement("div",{className:"flex gap-2 mt-3 items-center"},
+            React.createElement("span",{className:"text-xs text-gray-400 font-semibold flex-shrink-0"},"Vote:"),
+            [1,2,3].map(function(n){
+              var isActive=myVote===n; var wouldAdd=n-myVote; var canAdd=myTotal+wouldAdd<=MAX;
+              var cls=isActive?"bg-indigo-600 border-indigo-600 text-white":canAdd?"border-gray-200 text-gray-500 hover:border-indigo-300":"border-gray-100 text-gray-300 cursor-not-allowed";
+              return React.createElement("button",{key:n,onClick:function(){if(isActive||canAdd)onVote(r.id,isActive?0:n);},className:"flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all "+cls},(isActive?"✓ ":"")+n+" vote"+(n>1?"s":""));
+            }),
+            myVote>0 && React.createElement("button",{onClick:function(){onVote(r.id,0);},className:"px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50 flex-shrink-0"},"✕")
+          )
+        ),
+        isOpen && React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+          r.roleplayExample && React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+          r.definition && React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
+          r.workaround && React.createElement("p",{className:"text-xs text-gray-600"},React.createElement("span",{className:"font-semibold"},"Workaround: "),r.workaround),
+          React.createElement("div",{className:"text-xs text-gray-400 flex gap-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)))
+        )
+      );
+    }),
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
+      React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-700"},"Voting status"),React.createElement("span",{className:"text-xs text-gray-400"},votedCount+"/"+totalPeople+" people voted")),
+      teamStatus.map(function(ts){return React.createElement("div",{key:ts.team,className:"flex items-center gap-2 text-xs"},React.createElement("div",{className:"w-2 h-2 rounded-full flex-shrink-0 "+(ts.voted>0?"bg-emerald-500":"bg-gray-300")}),React.createElement("span",{className:"flex-1 "+(ts.voted>0?"text-gray-700 font-semibold":"text-gray-400")},ts.team),React.createElement("span",{className:ts.voted===ts.total?"text-emerald-600 font-bold":"text-gray-400"},ts.voted+"/"+ts.total+" voted"));}),
+      React.createElement("button",{onClick:onCloseVoting,className:"w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700"},"🏁 Close voting & show results"),
+      React.createElement("button",{onClick:onResetVoting,className:"w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50"},"🔄 Reset all votes")
+    )
+  );
 }
 
 // ── Engineering Tab ──────────────────────────────────────────
-function BestPracticesPanel(){
-  var _t=useState("epics"); var tab=_t[0]; var setTab=_t[1];
-  return <div className="bg-white rounded-xl border shadow-sm overflow-hidden sticky top-4">
-    <div className="bg-slate-800 px-4 py-3"><p className="text-sm font-black text-white">📖 Best Practices</p><p className="text-xs text-slate-400 mt-0.5">Keep these in mind when reviewing</p></div>
-    <div className="flex border-b">
-      <button onClick={function(){setTab("epics");}} className={"flex-1 py-2 text-xs font-bold "+(tab==="epics"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400")}>Epics</button>
-      <button onClick={function(){setTab("tickets");}} className={"flex-1 py-2 text-xs font-bold "+(tab==="tickets"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400")}>Tickets</button>
-    </div>
-    <div className="p-3 space-y-3">{BEST_PRACTICES[tab].map(function(p,i){return <div key={i} className="flex gap-2.5 items-start"><span className="text-base flex-shrink-0">{p.icon}</span><div><p className="text-xs font-bold text-gray-800">{p.title}</p><p className="text-xs text-gray-500 mt-0.5">{p.desc}</p></div></div>;})}</div>
-  </div>;
+function BestPracticesPanel() {
+  var s=useState("epics"); var tab=s[0]; var setTab=s[1];
+  return React.createElement("div",{className:"bg-white rounded-xl border shadow-sm overflow-hidden sticky top-4"},
+    React.createElement("div",{className:"bg-slate-800 px-4 py-3"},React.createElement("p",{className:"text-sm font-black text-white"},"📖 Best Practices")),
+    React.createElement("div",{className:"flex border-b"},
+      React.createElement("button",{onClick:function(){setTab("epics");},className:"flex-1 py-2 text-xs font-bold "+(tab==="epics"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400")},"Epics"),
+      React.createElement("button",{onClick:function(){setTab("tickets");},className:"flex-1 py-2 text-xs font-bold "+(tab==="tickets"?"border-b-2 border-indigo-600 text-indigo-600":"text-gray-400")},"Tickets")
+    ),
+    React.createElement("div",{className:"p-3 space-y-3"},
+      BEST_PRACTICES[tab].map(function(p,i){
+        return React.createElement("div",{key:i,className:"flex gap-2.5 items-start"},React.createElement("span",{className:"text-base flex-shrink-0"},p.icon),React.createElement("div",null,React.createElement("p",{className:"text-xs font-bold text-gray-800"},p.title),React.createElement("p",{className:"text-xs text-gray-500 mt-0.5"},p.desc)));
+      })
+    )
+  );
 }
 
-function EngineeringTab(props){
-  var reqs=props.reqs; var votes=props.votes;
-  var _st=useState("select"); var step=_st[0]; var setStep=_st[1];
-  var _si=useState([]); var selectedIds=_si[0]; var setSelected=_si[1];
-  var _rc=useState({}); var reqContexts=_rc[0]; var setReqContexts=_rc[1];
-  var _er=useState(null); var expandedReq=_er[0]; var setExpandedReq=_er[1];
-  var _ft=useState(props.user?props.user.team:"All"); var fTeam=_ft[0]; var setFTeam=_ft[1];
-  var _ep=useState([]); var epics=_ep[0]; var setEpics=_ep[1];
-  var _gen=useState(false); var generating=_gen[0]; var setGenerating=_gen[1];
-  var _ge=useState(""); var genError=_ge[0]; var setGenError=_ge[1];
-  var _ji=useState(""); var jsonInput=_ji[0]; var setJsonInput=_ji[1];
-  var _je=useState(""); var jsonError=_je[0]; var setJsonError=_je[1];
-  var _pr=useState([]); var pushedReqIds=_pr[0]; var setPushedReqIds=_pr[1];
-  var _pres=useState(null); var pushResult=_pres[0]; var setPushResult=_pres[1];
+function EngineeringTab(props) {
+  var reqs=props.reqs; var votes=props.votes; var user=props.user;
+  var s1=useState("select"); var step=s1[0]; var setStep=s1[1];
+  var s2=useState([]); var selectedIds=s2[0]; var setSelected=s2[1];
+  var s3=useState({}); var reqContexts=s3[0]; var setReqContexts=s3[1];
+  var s4=useState(null); var expandedReq=s4[0]; var setExpandedReq=s4[1];
+  var s5=useState("epics"); var genMode=s5[0]; var setGenMode=s5[1];
+  var s6=useState(user?user.team:"All"); var fTeam=s6[0]; var setFTeam=s6[1];
+  var s7=useState([]); var epics=s7[0]; var setEpics=s7[1];
+  var s8=useState(false); var generating=s8[0]; var setGenerating=s8[1];
+  var s9=useState(""); var genError=s9[0]; var setGenError=s9[1];
+  var s10=useState(""); var jsonInput=s10[0]; var setJsonInput=s10[1];
+  var s11=useState(""); var jsonError=s11[0]; var setJsonError=s11[1];
+  var s12=useState([]); var pushedIds=s12[0]; var setPushedIds=s12[1];
+  var s13=useState(null); var pushResult=s13[0]; var setPushResult=s13[1];
 
-  function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=(Number(v[String(id)])||0);});return t;}
-  function getScore2(r){return getScore(r)+getTotalVotes(r.id);}
+  function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=Number(v[String(id)])||0;});return t;}
+  function combinedScore(r){return getScore(r)+getTotalVotes(r.id);}
 
-  // All reqs sorted by score desc, filtered by team
-  var allSorted=reqs.slice().sort(function(a,b){return getScore2(b)-getScore2(a);});
-  var filtered=fTeam==="All"?allSorted:allSorted.filter(function(r){return r.team===fTeam;});
+  var allSorted = reqs.slice().sort(function(a,b){return combinedScore(b)-combinedScore(a);});
+  var filtered = fTeam==="All" ? allSorted : allSorted.filter(function(r){return r.team===fTeam;});
+  var selectedReqs = filtered.filter(function(r){return selectedIds.includes(r.id);});
 
-  var selectedReqs=filtered.filter(function(r){return selectedIds.includes(r.id);});
-  function toggleReq(id){setSelected(function(p){return p.includes(id)?p.filter(function(x){return x!==id;}):[...p,id];});}
+  // Group by recommended_category || category
+  var byCategory = filtered.reduce(function(acc,r){
+    var cat = getCategory(r) || "Uncategorized";
+    if (!acc[cat]) acc[cat]=[];
+    acc[cat].push(r);
+    return acc;
+  },{});
+  var catOrder = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Uncategorized","Other"];
+  var sortedCats = Object.keys(byCategory).sort(function(a,b){
+    var ia=catOrder.indexOf(a); var ib=catOrder.indexOf(b);
+    return (ia===-1?99:ia)-(ib===-1?99:ib);
+  });
+
+  function toggleReq(id){setSelected(function(p){return p.includes(id)?p.filter(function(x){return x!==id;}):[].concat(p,[id]);});}
   function toggleAll(){setSelected(selectedIds.length===filtered.length?[]:filtered.map(function(r){return r.id;}));}
+  function toggleCat(catReqs){
+    var allSel=catReqs.every(function(r){return selectedIds.includes(r.id);});
+    if(allSel){setSelected(function(p){return p.filter(function(id){return !catReqs.find(function(r){return r.id===id;});});});}
+    else{setSelected(function(p){var toAdd=catReqs.filter(function(r){return !p.includes(r.id);}).map(function(r){return r.id;});return p.concat(toAdd);});}
+  }
   function setCtx(id,val){setReqContexts(function(p){var n=Object.assign({},p);n[id]=val;return n;});}
 
-  async function doGenerate(){
+  function doGenerate() {
     if(!selectedIds.length)return;
     setGenerating(true);setGenError("");
-    var reqsWithCtx=await Promise.all(selectedReqs.map(async function(r){
+    var ctxPromises = selectedReqs.map(function(r){
       var ctx=reqContexts[r.id]||"";
-      if(!ctx.trim())return r;
-      try{var t=await gs.translate({additionalContext:ctx});return Object.assign({},r,{additionalContext:t.additionalContext||ctx});}catch(e){return Object.assign({},r,{additionalContext:ctx});}
-    }));
-    try{
-      var data=await gs.generateEpics(reqsWithCtx,"");
+      if(!ctx.trim())return Promise.resolve(r);
+      return gs.translate({additionalContext:ctx}).then(function(t){return Object.assign({},r,{additionalContext:t.additionalContext||ctx});}).catch(function(){return Object.assign({},r,{additionalContext:ctx});});
+    });
+    Promise.all(ctxPromises).then(function(reqsWithCtx){
+      var extraCtx = genMode==="tickets"?"Generate standalone tickets only, no epic grouping." : "";
+      return gs.generateEpics(reqsWithCtx, extraCtx);
+    }).then(function(data){
       if(!data.ok||!Array.isArray(data.epics))throw new Error(data.error||"Unexpected response");
       setEpics(data.epics.map(function(e,i){return Object.assign({},e,{id:Date.now()+i,approved:false,reqIds:(e.reqIds||[]).map(function(id){return String(id);})});}));
       setStep("review");
-    }catch(err){setGenError("Error: "+err.message);}
-    setGenerating(false);
+      setGenerating(false);
+    }).catch(function(err){setGenError("Error: "+err.message);setGenerating(false);});
   }
 
   function parseJson(){
@@ -653,230 +927,275 @@ function EngineeringTab(props){
   function updateEpic(idx,patch){setEpics(function(p){return p.map(function(e,i){return i===idx?Object.assign({},e,patch):e;});});}
   function updateTicket(eIdx,tIdx,patch){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.map(function(t,j){return j===tIdx?Object.assign({},t,patch):t;})}):e;});});}
   function removeTicket(eIdx,tIdx){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.filter(function(_,j){return j!==tIdx;})}):e;});});}
-  var approvedEpics=epics.filter(function(e){return e.approved;});
+  var approvedEpics = epics.filter(function(e){return e.approved;});
 
-  async function pushToJira(){
-    if(!approvedEpics.length)return;setStep("pushing");
-    var result=await gs.jira(approvedEpics);setPushResult(result);
-    if(result&&result.ok){var ids=approvedEpics.flatMap(function(e){return e.reqIds||[];});setPushedReqIds(function(prev){return [...new Set([...prev,...ids])];});}
-    setStep("done");
+  function pushToJira(){
+    if(!approvedEpics.length)return;
+    setStep("pushing");
+    gs.jira(approvedEpics).then(function(result){
+      setPushResult(result);
+      if(result&&result.ok){var ids=approvedEpics.reduce(function(a,e){return a.concat(e.reqIds||[]);},[]); setPushedIds(function(prev){return Array.from(new Set(prev.concat(ids)));});}
+      setStep("done");
+    });
   }
 
-  if(step==="done")return <div className="space-y-4">
-    {pushResult&&pushResult.ok
-      ?<div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">🎉</p><p className="text-xl font-black text-emerald-700">Done! Pushed to Jira</p><p className="text-sm text-emerald-600">Epics: <strong>{pushResult.keys&&pushResult.keys.join(", ")}</strong></p></div>
-      :<div className="bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"><p className="text-5xl">⚠️</p><p className="text-xl font-black text-rose-700">Something went wrong</p><p className="text-xs text-rose-500 font-mono">{(pushResult&&pushResult.error)||"Unknown error"}</p></div>}
-    <button onClick={function(){setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);}} className="w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50">← Start over</button>
-  </div>;
+  if(step==="done") return React.createElement("div",{className:"space-y-4"},
+    pushResult&&pushResult.ok
+      ? React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"🎉"),React.createElement("p",{className:"text-xl font-black text-emerald-700"},"Done! Pushed to Jira"),React.createElement("p",{className:"text-sm text-emerald-600"},"Epics: ",React.createElement("strong",null,pushResult.keys&&pushResult.keys.join(", "))))
+      : React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"⚠️"),React.createElement("p",{className:"text-xl font-black text-rose-700"},"Something went wrong"),React.createElement("p",{className:"text-xs text-rose-500 font-mono"},(pushResult&&pushResult.error)||"Unknown error")),
+    React.createElement("button",{onClick:function(){setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);},className:"w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"},"← Start over")
+  );
 
-  if(step==="pushing")return <div className="flex flex-col items-center justify-center py-32 gap-4 text-gray-400"><div className="text-6xl animate-bounce">🚀</div><p className="text-sm font-bold text-gray-600">Pushing to Jira…</p></div>;
+  if(step==="pushing") return React.createElement("div",{className:"flex flex-col items-center justify-center py-32 gap-4 text-gray-400"},React.createElement("div",{className:"text-6xl animate-bounce"},"🚀"),React.createElement("p",{className:"text-sm font-bold text-gray-600"},"Pushing to Jira…"));
 
-  if(step==="paste")return <div className="flex gap-4 items-start">
-    <div className="flex-1 min-w-0 space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Manual fallback — paste JSON</p></div><button onClick={function(){setStep("select");}} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
-      <textarea className={"w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 "+(jsonError?"border-rose-400":"border-gray-200 focus:border-indigo-400")} placeholder={'[\n  { "title": "...", ... }\n]'} value={jsonInput} onChange={function(e){setJsonInput(e.target.value);setJsonError("");}}/>
-      {jsonError&&<p className="text-xs text-rose-600">{jsonError}</p>}
-      <button onClick={parseJson} disabled={!jsonInput.trim()} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40">Review Epics →</button>
-    </div>
-    <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
-  </div>;
+  if(step==="paste") return React.createElement("div",{className:"flex gap-4 items-start"},
+    React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},
+      React.createElement("div",{className:"bg-white rounded-xl border p-4 flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"Manual fallback — paste JSON"),React.createElement("button",{onClick:function(){setStep("select");},className:"text-xs text-gray-400 hover:text-gray-600"},"← Back")),
+      React.createElement("textarea",{className:"w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 "+(jsonError?"border-rose-400":"border-gray-200"),placeholder:'[\n  { "title": "...", ... }\n]',value:jsonInput,onChange:function(e){setJsonInput(e.target.value);setJsonError("");}}),
+      jsonError && React.createElement("p",{className:"text-xs text-rose-600"},jsonError),
+      React.createElement("button",{onClick:parseJson,disabled:!jsonInput.trim(),className:"w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40"},"Review Epics →")
+    ),
+    React.createElement("div",{className:"w-64 flex-shrink-0"},React.createElement(BestPracticesPanel,null))
+  );
 
-  if(step==="review")return <div className="flex gap-4 items-start">
-    <div className="flex-1 min-w-0 space-y-4">
-      <div className="bg-white rounded-xl border p-4 flex items-center justify-between"><div><p className="text-sm font-bold text-gray-800">Review & Approve Epics</p><p className="text-xs text-gray-400">Edit, approve, then push to Jira.</p></div><button onClick={function(){setStep("select");}} className="text-xs text-gray-400 hover:text-gray-600">← Back</button></div>
-      {epics.map(function(epic,eIdx){
+  if(step==="review") return React.createElement("div",{className:"flex gap-4 items-start"},
+    React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},
+      React.createElement("div",{className:"bg-white rounded-xl border p-4 flex items-center justify-between"},
+        React.createElement("div",null,React.createElement("p",{className:"text-sm font-bold text-gray-800"},"Review & Approve"),React.createElement("p",{className:"text-xs text-gray-400"},"Edit, approve, then push to Jira.")),
+        React.createElement("button",{onClick:function(){setStep("select");},className:"text-xs text-gray-400 hover:text-gray-600"},"← Back")
+      ),
+      epics.map(function(epic,eIdx){
         var epicReqs=selectedReqs.filter(function(r){return (epic.reqIds||[]).includes(String(r.id));});
-        return <div key={eIdx} className={"bg-white rounded-2xl border-2 shadow-sm overflow-hidden "+(epic.approved?"border-emerald-400":"border-gray-200")}>
-          <div className={"px-4 py-3 flex items-center justify-between gap-3 "+(epic.approved?"bg-emerald-50":"bg-gray-50")}>
-            <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-black text-gray-400">EPIC {eIdx+1}</span>{epic.bucket&&<span className={"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(epic.bucket)}>{epic.bucket}</span>}<span className="text-xs text-gray-400">{epicReqs.length} reqs · {(epic.tickets&&epic.tickets.length)||0} tickets</span></div>
-            <button onClick={function(){updateEpic(eIdx,{approved:!epic.approved});}} className={"flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all "+(epic.approved?"bg-emerald-500 border-emerald-500 text-white":"border-gray-300 text-gray-500 hover:border-emerald-400")}>{epic.approved?"✓ Approved":"Approve"}</button>
-          </div>
-          <div className="p-4 space-y-3">
-            <div><label className="text-xs font-bold text-gray-500 block mb-1">Title</label><input className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400" value={epic.title||""} onChange={function(e){updateEpic(eIdx,{title:e.target.value});}}/></div>
-            <div><label className="text-xs font-bold text-gray-500 block mb-1">Description</label><textarea className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none" rows={2} value={epic.description||""} onChange={function(e){updateEpic(eIdx,{description:e.target.value});}}/></div>
-            {epic.openQuestions&&epic.openQuestions.length>0&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1"><p className="text-xs font-bold text-amber-700">❓ Open questions</p>{epic.openQuestions.map(function(q,qi){return <p key={qi} className="text-xs text-amber-800 flex gap-1.5"><span>·</span>{q}</p>;})}</div>}
-            {epicReqs.length>0&&<div className="space-y-1"><p className="text-xs font-bold text-gray-400">Linked requirements</p>{epicReqs.map(function(r){return <div key={r.id} className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"><span className="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"/>{r.problem}</div>;})}</div>}
-            {epic.tickets&&epic.tickets.length>0&&<div className="space-y-2 pt-1 border-t"><p className="text-xs font-bold text-gray-400 pt-1">Child tickets</p>
-              {epic.tickets.map(function(t,tIdx){return <div key={tIdx} className="bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2">
-                <div className="flex gap-2 items-center"><span className="text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0">T{tIdx+1}</span><input className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white" value={t.title||""} onChange={function(e){updateTicket(eIdx,tIdx,{title:e.target.value});}}/><button onClick={function(){removeTicket(eIdx,tIdx);}} className="text-gray-300 hover:text-red-400 text-lg flex-shrink-0">×</button></div>
-                {t.role&&t.goal&&<p className="text-xs text-gray-500 px-1">As a <strong>{t.role}</strong>, I want to {t.goal}{t.benefit?" "+t.benefit:""}</p>}
-                {t.questions&&t.questions.length>0&&<div className="bg-yellow-50 rounded-lg px-2 py-1.5">{t.questions.map(function(q,qi){return <p key={qi} className="text-xs text-yellow-700 flex gap-1"><span>❓</span>{q}</p>;})}</div>}
-                <div className="space-y-1">{(t.acs||[]).map(function(ac,ai){return <div key={ai} className="flex gap-2 items-start"><span className="text-xs text-gray-300 mt-1.5 flex-shrink-0">AC{ai+1}</span><input className="flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white" value={ac||""} onChange={function(e){var acs=[...t.acs];acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs:acs});}}/></div>;})}</div>
-              </div>;})}
-            </div>}
-          </div>
-        </div>;
-      })}
-      <div className="sticky bottom-4 pt-2">
-        <button onClick={pushToJira} disabled={!approvedEpics.length} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl">🚀 Push {approvedEpics.length} epic{approvedEpics.length!==1?"s":""} to Jira</button>
-        {!approvedEpics.length&&<p className="text-center text-xs text-gray-400 mt-2">Approve at least one epic to continue</p>}
-      </div>
-    </div>
-    <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
-  </div>;
+        return React.createElement("div",{key:eIdx,className:"bg-white rounded-2xl border-2 shadow-sm overflow-hidden "+(epic.approved?"border-emerald-400":"border-gray-200")},
+          React.createElement("div",{className:"px-4 py-3 flex items-center justify-between gap-3 "+(epic.approved?"bg-emerald-50":"bg-gray-50")},
+            React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},
+              React.createElement("span",{className:"text-xs font-black text-gray-400"},genMode==="tickets"?"TICKET "+(eIdx+1):"EPIC "+(eIdx+1)),
+              epic.bucket&&React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(epic.bucket)},epic.bucket),
+              React.createElement("span",{className:"text-xs text-gray-400"},epicReqs.length+" reqs · "+((epic.tickets&&epic.tickets.length)||0)+" tickets")
+            ),
+            React.createElement("button",{onClick:function(){updateEpic(eIdx,{approved:!epic.approved});},className:"flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all "+(epic.approved?"bg-emerald-500 border-emerald-500 text-white":"border-gray-300 text-gray-500 hover:border-emerald-400")},epic.approved?"✓ Approved":"Approve")
+          ),
+          React.createElement("div",{className:"p-4 space-y-3"},
+            React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-500 block mb-1"},"Title"),React.createElement("input",{className:"w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none focus:border-indigo-400",value:epic.title||"",onChange:function(e){updateEpic(eIdx,{title:e.target.value});}})),
+            React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-500 block mb-1"},"Description"),React.createElement("textarea",{className:"w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none",rows:2,value:epic.description||"",onChange:function(e){updateEpic(eIdx,{description:e.target.value});}})),
+            epic.openQuestions&&epic.openQuestions.length>0&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1"},React.createElement("p",{className:"text-xs font-bold text-amber-700"},"❓ Open questions"),epic.openQuestions.map(function(q,qi){return React.createElement("p",{key:qi,className:"text-xs text-amber-800 flex gap-1.5"},React.createElement("span",null,"·"),q);})),
+            epicReqs.length>0&&React.createElement("div",{className:"space-y-1"},React.createElement("p",{className:"text-xs font-bold text-gray-400"},"Linked requirements"),epicReqs.map(function(r){return React.createElement("div",{key:r.id,className:"flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"},React.createElement("span",{className:"w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"}),r.problem);})),
+            epic.tickets&&epic.tickets.length>0&&React.createElement("div",{className:"space-y-2 pt-1 border-t"},
+              React.createElement("p",{className:"text-xs font-bold text-gray-400 pt-1"},"Child tickets"),
+              epic.tickets.map(function(t,tIdx){
+                return React.createElement("div",{key:tIdx,className:"bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2"},
+                  React.createElement("div",{className:"flex gap-2 items-center"},React.createElement("span",{className:"text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0"},"T"+(tIdx+1)),React.createElement("input",{className:"flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white",value:t.title||"",onChange:function(e){updateTicket(eIdx,tIdx,{title:e.target.value});}}),React.createElement("button",{onClick:function(){removeTicket(eIdx,tIdx);},className:"text-gray-300 hover:text-red-400 text-lg flex-shrink-0"},"×")),
+                  t.role&&t.goal&&React.createElement("p",{className:"text-xs text-gray-500 px-1"},"As a ",React.createElement("strong",null,t.role),", I want to "+t.goal+(t.benefit?" "+t.benefit:"")),
+                  t.questions&&t.questions.length>0&&React.createElement("div",{className:"bg-yellow-50 rounded-lg px-2 py-1.5"},t.questions.map(function(q,qi){return React.createElement("p",{key:qi,className:"text-xs text-yellow-700 flex gap-1"},React.createElement("span",null,"❓"),q);})),
+                  React.createElement("div",{className:"space-y-1"},(t.acs||[]).map(function(ac,ai){return React.createElement("div",{key:ai,className:"flex gap-2 items-start"},React.createElement("span",{className:"text-xs text-gray-300 mt-1.5 flex-shrink-0"},"AC"+(ai+1)),React.createElement("input",{className:"flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white",value:ac||"",onChange:function(e){var acs=[].concat(t.acs);acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs:acs});}}));}))
+                );
+              })
+            )
+          )
+        );
+      }),
+      React.createElement("div",{className:"sticky bottom-4 pt-2"},
+        React.createElement("button",{onClick:pushToJira,disabled:!approvedEpics.length,className:"w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl"},"🚀 Push "+approvedEpics.length+" "+(genMode==="tickets"?"ticket":"epic")+(approvedEpics.length!==1?"s":"")+" to Jira"),
+        !approvedEpics.length&&React.createElement("p",{className:"text-center text-xs text-gray-400 mt-2"},"Approve at least one to continue")
+      )
+    ),
+    React.createElement("div",{className:"w-64 flex-shrink-0"},React.createElement(BestPracticesPanel,null))
+  );
 
-  // ── Select step ──────────────────────────────────────────
-  return <div className="flex gap-4 items-start">
-    <div className="flex-1 min-w-0 space-y-4">
-      <div className="bg-white rounded-xl border p-4 space-y-1"><p className="text-sm font-bold text-gray-800">⚙️ Engineering — All requirements</p><p className="text-xs text-gray-500">Sorted by score + votes. Filter by team, expand for full details, add context per requirement.</p></div>
-
-      {/* Team filter */}
-      <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center">
-        <span className="text-xs font-semibold text-gray-500">Team:</span>
-        <button onClick={function(){setFTeam("All");setSelected([]);}} className={"text-xs px-3 py-1.5 rounded-full font-bold border-2 transition-all "+( fTeam==="All"?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-500 hover:border-indigo-300")}>All</button>
-        {TEAMS.map(function(t){var tc=teamColor(t);return <button key={t} onClick={function(){setFTeam(t);setSelected([]);}} className={"text-xs px-3 py-1.5 rounded-full font-bold border-2 transition-all "+(fTeam===t?tc.light:"border-gray-200 text-gray-500 hover:border-gray-300")}>{t}</button>;})}
-        <span className="ml-auto text-xs text-gray-400">{filtered.length} requirement{filtered.length!==1?"s":""}</span>
-      </div>
-
-      {filtered.length===0
-        ?<div className="text-center py-16 text-gray-400"><p className="text-4xl mb-2">📭</p><p className="text-sm">No requirements yet.</p></div>
-        :<div className="space-y-3">
-          <div className="bg-white rounded-xl border p-3 flex items-center justify-between">
-            <button onClick={toggleAll} className="text-xs font-bold text-indigo-600 hover:underline">{selectedIds.length===filtered.length?"Deselect all":"Select all"}</button>
-            <span className="text-xs text-gray-400">{selectedIds.length} selected</span>
-          </div>
-
-          {filtered.map(function(r,idx){
-            var tc=teamColor(r.team); var sel=selectedIds.includes(r.id);
-            var score=getScore(r); var v2=getTotalVotes(r.id);
-            var isExpanded=expandedReq===r.id; var isPushed=pushedReqIds.includes(String(r.id));
-            var bucket=autoBucket(score);
-            return <div key={r.id} className={"bg-white rounded-xl border shadow-sm overflow-hidden"+(sel?" border-indigo-200":"")+(isPushed?" border-l-4 border-l-emerald-400":"")}>
-              <div onClick={function(){toggleReq(r.id);}} className={"flex items-start gap-3 px-4 py-3 cursor-pointer transition-all "+(sel?"bg-indigo-50":"hover:bg-gray-50")}>
-                <div className={"mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(sel?"bg-indigo-600 border-indigo-600":"border-gray-300")}>{sel&&<span className="text-white text-xs">✓</span>}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2"><span className="text-xs font-black text-gray-400">#{idx+1}</span><p className={"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")}>{r.problem}</p></div>
-                  <div className="flex flex-wrap gap-1.5 mt-1">
-                    <Badge cls={tc.badge}>{r.team}</Badge>
-                    <span className={"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)}>{bucket}</span>
-                    {score>0&&<span className="text-xs text-indigo-500 font-bold">⭐{score}</span>}
-                    {v2>0&&<span className="text-xs text-emerald-600 font-bold">🗳️{v2}</span>}
-                    {r.frequency&&<Badge cls="bg-indigo-100 text-indigo-700">{r.frequency}</Badge>}
-                    {isPushed&&<Badge cls="bg-emerald-100 text-emerald-700">✅ In Jira</Badge>}
-                  </div>
-                </div>
-                <button onClick={function(e){e.stopPropagation();setExpandedReq(isExpanded?null:r.id);}} className="text-gray-300 hover:text-gray-500 text-lg flex-shrink-0">{isExpanded?"▲":"▼"}</button>
-              </div>
-
-              {isExpanded&&<div className="border-t bg-slate-50 p-4 space-y-3">
-                {/* Full requirement info */}
-                <p className="text-base font-black text-gray-900">{r.problem}</p>
-                <div className="flex flex-wrap gap-2">
-                  {r.submittedBy&&<Badge cls="bg-gray-100 text-gray-500">👤 {r.submittedBy}</Badge>}
-                  {r.pipelineStage&&<Badge cls="bg-gray-100 text-gray-600">{r.pipelineStage}</Badge>}
-                  {r.agentPotential&&<Badge cls={agentBadge(r.agentPotential)}>{r.agentPotential}</Badge>}
-                </div>
-                {r.roleplayExample&&<div className="bg-amber-50 border border-amber-200 rounded-xl p-3"><p className="text-xs font-bold text-amber-700 mb-1">📝 Context & evidence</p><p className="text-xs text-amber-800 leading-relaxed">{r.roleplayExample}</p></div>}
-                {r.workaround&&<div className="bg-slate-100 border border-slate-200 rounded-xl p-3"><p className="text-xs font-bold text-slate-600 mb-1">🔧 Current workaround</p><p className="text-xs text-slate-700">{r.workaround}</p></div>}
-                {r.definition&&<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-xs font-bold text-emerald-700 mb-1">🎯 Definition of solved</p><p className="text-xs text-emerald-800 leading-relaxed">{r.definition}</p></div>}
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border">
-                  {r.stakeholders&&r.stakeholders.length>0&&<div><span className="font-semibold text-gray-500">Affected: </span><span className="text-gray-700">{(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")}</span></div>}
-                  {r.consequences&&r.consequences.length>0&&<div><span className="font-semibold text-gray-500">Cost: </span><span className="text-gray-700">{(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")}</span></div>}
-                  {score>0&&<div className="col-span-2 flex gap-3 pt-1 border-t mt-1"><span>💥{r.impactScore||0}</span><span>🔁{r.frequencyScore||0}</span><span>⚠️{r.riskScore||0}</span><span>🚀{r.leverageScore||0}</span><span className={"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")}>Score: {score}/20 · {autoBucket(score)}</span></div>}
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-gray-600 block mb-1">💬 Additional context <span className="text-gray-400 font-normal">(optional — translates to English)</span></label>
-                  <textarea className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white" rows={3} placeholder="Notes for engineering before generating epics…" value={reqContexts[r.id]||""} onChange={function(e){setCtx(r.id,e.target.value);}}/>
-                </div>
-              </div>}
-            </div>;
-          })}
-
-          <div className="sticky bottom-4 pt-2 space-y-2">
-            {genError&&<div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center">{genError} — <button onClick={function(){setStep("paste");}} className="underline font-bold">paste manually instead</button></div>}
-            <button onClick={doGenerate} disabled={!selectedIds.length||generating} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40 shadow-xl transition-all">
-              {generating?<span className="flex items-center justify-center gap-2"><span className="animate-spin inline-block">⚙️</span>Generating epics & tickets… (~20s)</span>:("✨ Generate epics & tickets from "+selectedIds.length+" requirement"+(selectedIds.length!==1?"s":""))}
-            </button>
-            {selectedIds.length>0&&!generating&&<p className="text-center text-xs text-gray-400">Powered by Claude via Apps Script</p>}
-          </div>
-        </div>
-      }
-    </div>
-    <div className="w-64 flex-shrink-0"><BestPracticesPanel/></div>
-  </div>;
+  // Select step
+  return React.createElement("div",{className:"flex gap-4 items-start"},
+    React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},
+      React.createElement("div",{className:"bg-white rounded-xl border p-4"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"⚙️ Engineering — All requirements"),React.createElement("p",{className:"text-xs text-gray-500 mt-0.5"},"Sorted by score + votes, grouped by category. Filter by team.")),
+      React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center"},
+        React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),
+        React.createElement("button",{onClick:function(){setFTeam("All");setSelected([]);},className:"text-xs px-3 py-1.5 rounded-full font-bold border-2 transition-all "+(fTeam==="All"?"bg-indigo-600 border-indigo-600 text-white":"border-gray-200 text-gray-500 hover:border-indigo-300")},"All"),
+        TEAMS.map(function(t){var tc=teamColor(t);return React.createElement("button",{key:t,onClick:function(){setFTeam(t);setSelected([]);},className:"text-xs px-3 py-1.5 rounded-full font-bold border-2 transition-all "+(fTeam===t?tc.light:"border-gray-200 text-gray-500 hover:border-gray-300")},t);}),
+        React.createElement("span",{className:"ml-auto text-xs text-gray-400"},filtered.length+" reqs")
+      ),
+      React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
+        React.createElement("p",{className:"text-xs font-bold text-gray-700 uppercase tracking-wide"},"Generation mode"),
+        React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+          React.createElement("button",{onClick:function(){setGenMode("epics");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="epics"?"bg-indigo-50 border-indigo-500":"border-gray-200 hover:border-indigo-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="epics"?"text-indigo-700":"text-gray-700")},"🗂️ Epics + tickets"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Group requirements into epics with child stories")),
+          React.createElement("button",{onClick:function(){setGenMode("tickets");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="tickets"?"bg-green-50 border-green-500":"border-gray-200 hover:border-green-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="tickets"?"text-green-700":"text-gray-700")},"⚡ Tickets only"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Create standalone stories, no epic grouping"))
+        )
+      ),
+      filtered.length===0
+        ? React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet."))
+        : React.createElement("div",{className:"space-y-3"},
+            React.createElement("div",{className:"bg-white rounded-xl border p-3 flex items-center justify-between"},
+              React.createElement("button",{onClick:toggleAll,className:"text-xs font-bold text-indigo-600 hover:underline"},selectedIds.length===filtered.length?"Deselect all":"Select all"),
+              React.createElement("span",{className:"text-xs text-gray-400"},selectedIds.length+" selected")
+            ),
+            sortedCats.map(function(cat){
+              var catReqs=byCategory[cat];
+              var allSel=catReqs.every(function(r){return selectedIds.includes(r.id);});
+              var catBg={"Workflow Optimization":"bg-green-700","Agent Enablement":"bg-purple-700","Structural Re-Architecture":"bg-red-700","Uncategorized":"bg-slate-600","Other":"bg-gray-600"}[cat]||"bg-indigo-700";
+              return React.createElement("div",{key:cat,className:"bg-white rounded-xl border shadow-sm overflow-hidden"},
+                React.createElement("div",{className:catBg+" px-4 py-2.5 flex items-center justify-between"},
+                  React.createElement("span",{className:"text-xs font-bold text-white"},"🏷️ "+cat),
+                  React.createElement("div",{className:"flex items-center gap-3"},
+                    React.createElement("span",{className:"text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full"},catReqs.length),
+                    React.createElement("button",{onClick:function(){toggleCat(catReqs);},className:"text-xs text-white opacity-80 hover:opacity-100 font-semibold"},allSel?"Deselect all":"Select all")
+                  )
+                ),
+                React.createElement("div",{className:"divide-y"},
+                  catReqs.map(function(r){
+                    var tc=teamColor(r.team); var sel=selectedIds.includes(r.id);
+                    var score=getScore(r); var vts=getTotalVotes(r.id);
+                    var isExp=expandedReq===r.id; var isPushed=pushedIds.includes(String(r.id));
+                    var bucket=autoBucket(score);
+                    return React.createElement("div",{key:r.id,className:"overflow-hidden"+(isPushed?" border-l-4 border-l-emerald-400":"")},
+                      React.createElement("div",{onClick:function(){toggleReq(r.id);},className:"flex items-start gap-3 px-4 py-3 cursor-pointer transition-all "+(sel?"bg-indigo-50":"hover:bg-gray-50")},
+                        React.createElement("div",{className:"mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(sel?"bg-indigo-600 border-indigo-600":"border-gray-300")},sel&&React.createElement("span",{className:"text-white text-xs"},"✓")),
+                        React.createElement("div",{className:"flex-1 min-w-0"},
+                          React.createElement("p",{className:"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")},r.problem),
+                          React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1"},
+                            React.createElement(Badge,{cls:tc.badge},r.team),
+                            React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),
+                            score>0&&React.createElement("span",{className:"text-xs text-indigo-500 font-bold"},"⭐"+score),
+                            vts>0&&React.createElement("span",{className:"text-xs text-emerald-600 font-bold"},"🗳️"+vts),
+                            r.easyWin&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),
+                            isPushed&&React.createElement(Badge,{cls:"bg-emerald-100 text-emerald-700"},"✅ In Jira")
+                          )
+                        ),
+                        React.createElement("button",{onClick:function(e){e.stopPropagation();setExpandedReq(isExp?null:r.id);},className:"text-gray-300 hover:text-gray-500 text-lg flex-shrink-0"},isExp?"▲":"▼")
+                      ),
+                      isExp && React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+                        React.createElement("p",{className:"text-base font-black text-gray-900"},r.problem),
+                        React.createElement("div",{className:"flex flex-wrap gap-2"},
+                          r.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),
+                          r.pipelineStage&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},r.pipelineStage),
+                          r.agentPotential&&React.createElement(Badge,{cls:agentBadge(r.agentPotential)},r.agentPotential)
+                        ),
+                        r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+                        r.workaround&&React.createElement("div",{className:"bg-slate-100 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-xs text-slate-700"},r.workaround)),
+                        r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
+                        React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border"},
+                          r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),
+                          r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),
+                          score>0&&React.createElement("div",{className:"col-span-2 flex gap-3 pt-1 border-t mt-1"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Score: "+score+"/20 · "+autoBucket(score)))
+                        ),
+                        React.createElement("div",null,
+                          React.createElement("label",{className:"text-xs font-bold text-gray-600 block mb-1"},"💬 Additional context ",React.createElement("span",{className:"text-gray-400 font-normal"},"(optional — translates to English)")),
+                          React.createElement("textarea",{className:"w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white",rows:3,placeholder:"Notes for engineering before generating…",value:reqContexts[r.id]||"",onChange:function(e){setCtx(r.id,e.target.value);}})
+                        )
+                      )
+                    );
+                  })
+                )
+              );
+            }),
+            React.createElement("div",{className:"sticky bottom-4 pt-2 space-y-2"},
+              genError&&React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center"},genError," — ",React.createElement("button",{onClick:function(){setStep("paste");},className:"underline font-bold"},"paste manually instead")),
+              React.createElement("button",{onClick:doGenerate,disabled:!selectedIds.length||generating,className:"w-full py-4 text-white rounded-2xl font-bold text-sm disabled:opacity-40 shadow-xl transition-all "+(genMode==="tickets"?"bg-green-600 hover:bg-green-700":"bg-indigo-600 hover:bg-indigo-700")},
+                generating
+                  ? React.createElement("span",{className:"flex items-center justify-center gap-2"},React.createElement("span",{className:"animate-spin inline-block"},"⚙️"),"Generating… (~20s)")
+                  : (genMode==="tickets"?"⚡ Generate "+selectedIds.length+" standalone ticket"+(selectedIds.length!==1?"s":""):"✨ Generate epics & tickets from "+selectedIds.length+" requirement"+(selectedIds.length!==1?"s":""))
+              ),
+              selectedIds.length>0&&!generating&&React.createElement("p",{className:"text-center text-xs text-gray-400"},"Powered by Claude via Apps Script")
+            )
+          )
+    ),
+    React.createElement("div",{className:"w-64 flex-shrink-0"},React.createElement(BestPracticesPanel,null))
+  );
 }
 
 // ── Main App ─────────────────────────────────────────────────
-function App(){
-  var _u=useState(null); var user=_u[0]; var setUser=_u[1];
-  var _dy=useState(1); var day=_dy[0]; var setDay=_dy[1];
-  var _tb=useState(0); var tab=_tb[0]; var setTab=_tb[1];
-  var _rq=useState([]); var reqs=_rq[0]; var setReqs=_rq[1];
-  var _vt=useState({}); var votes=_vt[0]; var setVotes=_vt[1];
-  var _vc=useState(false); var votingClosed=_vc[0]; var setVotingClosed=_vc[1];
-  var _ld=useState(true); var loading=_ld[0]; var setLoading=_ld[1];
-  var _sy=useState("idle"); var syncStatus=_sy[0]; var setSync=_sy[1];
-  var _lr=useState(null); var lastRefresh=_lr[0]; var setRefresh=_lr[1];
+function App() {
+  var s1=useState(null); var user=s1[0]; var setUser=s1[1];
+  var s2=useState(1); var day=s2[0]; var setDay=s2[1];
+  var s3=useState(0); var tab=s3[0]; var setTab=s3[1];
+  var s4=useState([]); var reqs=s4[0]; var setReqs=s4[1];
+  var s5=useState({}); var votes=s5[0]; var setVotes=s5[1];
+  var s6=useState(false); var votingClosed=s6[0]; var setVotingClosed=s6[1];
+  var s7=useState(true); var loading=s7[0]; var setLoading=s7[1];
+  var s8=useState("idle"); var syncStatus=s8[0]; var setSync=s8[1];
+  var s9=useState(null); var lastRefresh=s9[0]; var setRefresh=s9[1];
 
-  async function loadAll(){
-    var results=await Promise.all([gs.get("requirements"),loadVoting()]);
-    setReqs(results[0]);setVotes(results[1].votes);setVotingClosed(results[1].closed);setRefresh(new Date());
+  function loadAll() {
+    return Promise.all([gs.get("requirements"), loadVoting()]).then(function(results) {
+      setReqs(results[0]); setVotes(results[1].votes); setVotingClosed(results[1].closed); setRefresh(new Date());
+    });
   }
-  useEffect(function(){loadAll().finally(function(){setLoading(false);});},[]);
+  useEffect(function(){loadAll().then(function(){setLoading(false);}).catch(function(){setLoading(false);});}, []);
   useEffect(function(){
     if(!user)return;
     var iv=setInterval(loadAll,30000);
     return function(){clearInterval(iv);};
   },[user]);
 
-  async function withSync(fn){setSync("syncing");try{await fn();setSync("ok");setTimeout(function(){setSync("idle");},2500);}catch(e){setSync("error");setTimeout(function(){setSync("idle");},4000);}}
-  async function addReq(req){setSync("syncing");try{await gs.upsert("requirements",req);await loadAll();setSync("ok");setTimeout(function(){setSync("idle");},2500);}catch(e){setSync("error");setTimeout(function(){setSync("idle");},4000);}}
-  async function updateReq(id,patch){var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});setReqs(updated);await withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});}
-  async function deleteReq(id){setReqs(function(p){return p.filter(function(r){return r.id!==id;});});await withSync(function(){return gs.del("requirements",id);});}
+  function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
+  function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
+  function updateReq(id,patch){var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});setReqs(updated);withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});}
+  function deleteReq(id){setReqs(function(p){return p.filter(function(r){return r.id!==id;});});withSync(function(){return gs.del("requirements",id);});}
 
-  async function castVote(reqId,pts){
+  function castVote(reqId,pts){
     var vid=voterId(user); var sid=String(reqId);
-    setVotes(function(prev){var myV=Object.assign({},prev[vid]||{});if(pts===0){delete myV[sid];}else{myV[sid]=pts;}var next=Object.assign({},prev);next[vid]=myV;gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:myV});return next;});
+    setVotes(function(prev){
+      var myV=Object.assign({},prev[vid]||{});
+      if(pts===0){delete myV[sid];}else{myV[sid]=pts;}
+      var next=Object.assign({},prev); next[vid]=myV;
+      gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:myV});
+      return next;
+    });
   }
-  async function closeVoting(){setVotingClosed(true);await gs.upsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});}
-  async function resetVoting(){
+  function closeVoting(){setVotingClosed(true);gs.upsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});}
+  function resetVoting(){
     if(!window.confirm("Reset all votes? This cannot be undone."))return;
-    setVotes({});setVotingClosed(false);
-    await gs.del("scores_upvotes","__voting_closed__");
-    var allPeople=Object.values(TEAM_MEMBERS).flat();
-    for(var i=0;i<allPeople.length;i++){
-      var vid=allPeople[i].toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
-      await gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:{}});
-    }
+    setVotes({}); setVotingClosed(false);
+    gs.del("scores_upvotes","__voting_closed__");
+    Object.values(TEAM_MEMBERS).reduce(function(a,b){return a.concat(b);}).forEach(function(name){
+      var vid=name.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");
+      gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:{}});
+    });
   }
 
-  if(loading)return <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}}><div style={{fontSize:"2.5rem"}}>⚡</div><p style={{fontSize:"0.875rem"}}>Loading from Google Sheets…</p></div>;
-  if(!user)return <EntryScreen onEnter={function(t,d,name){setUser({team:t,name:name});setDay(d);setTab(0);}}/>;
+  if(loading) return React.createElement("div",{style:{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}},React.createElement("div",{style:{fontSize:"2.5rem"}},"⚡"),React.createElement("p",{style:{fontSize:"0.875rem"}},"Loading from Google Sheets…"));
+  if(!user) return React.createElement(EntryScreen,{onEnter:function(t,d,name){setUser({team:t,name:name});setDay(d);setTab(0);}});
 
-  var tc=teamColor(user.team); var tabs=day===1?TABS_D1:TABS_D2;
-  return <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50">
-    <div className="bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shadow-lg">
-      <div><h1 className="text-xl font-bold">⚡ Offsite Hub</h1>
-        <div className="flex items-center gap-2 mt-0.5"><span className={"text-xs px-2 py-0.5 rounded-full font-bold "+(day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900")}>Day {day}</span><p className="text-indigo-300 text-xs">{day===1?"Roleplay + Capture":"Synthesis + Engineering"}</p></div>
-      </div>
-      <div className="text-right">
-        <span className={"inline-flex items-center px-3 py-1 rounded-full text-xs font-bold "+tc.bg+" text-white"}>{user.name||user.team}</span>
-        <p className="text-indigo-300 text-xs mt-0.5 opacity-70">{user.team}</p>
-        <p className="text-indigo-300 text-xs cursor-pointer hover:text-white" onClick={function(){setUser(null);}}>Switch →</p>
-      </div>
-    </div>
-    <div className="bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center">
-      <span>📌 <strong className="text-gray-800">{reqs.length}</strong> requirements</span>
-      <span>🏷️ <strong className="text-gray-800">{[...new Set(reqs.map(function(r){return r.team;}))].length}</strong> teams</span>
-      {votingClosed&&<span className="text-rose-600 font-bold">🏁 Voting closed</span>}
-      <span className="flex items-center gap-1.5"><SyncBadge status={syncStatus}/>{syncStatus==="idle"&&lastRefresh&&<span className="text-gray-300">Synced {lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}</span>
-      <button onClick={function(){setDay(function(d){return d===1?2:1;});}} className="ml-auto text-indigo-500 hover:underline">Switch to Day {day===1?2:1} →</button>
-    </div>
-    <div className="flex border-b bg-white px-4 overflow-x-auto">
-      {tabs.map(function(t,i){return <button key={i} onClick={function(){setTab(i);}} className={"px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors "+(tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700")}>{t}</button>;})}
-    </div>
-    <div className={(day===2&&tab===2?"px-5 py-5":"max-w-3xl mx-auto p-5")+" space-y-4"}>
-      {day===1&&<TeamContextPanel team={user.team}/>}
-      {day===1&&tab===0&&<SubmitTab user={user} onSave={addReq} syncStatus={syncStatus}/>}
-      {day===1&&tab===1&&<RequirementsTab reqs={reqs} user={user} onUpdate={updateReq} onDelete={deleteReq} syncStatus={syncStatus}/>}
-      {day===2&&tab===0&&<ReadOutTab reqs={reqs} onUpdate={updateReq}/>}
-      {day===2&&tab===1&&<SynthesisVoteTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user} onVote={castVote} onCloseVoting={closeVoting} onResetVoting={resetVoting} onUpdateReq={updateReq}/>}
-      {day===2&&tab===2&&<EngineeringTab reqs={reqs} votes={votes} votingClosed={votingClosed} user={user}/>}
-    </div>
-  </div>;
+  var tc=teamColor(user.team);
+  var tabs=day===1?TABS_D1:TABS_D2;
+  var tabEmojis=day===1?["➕","📋"]:["🎤","🗳️","⚙️"];
+
+  return React.createElement("div",{className:"min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50"},
+    React.createElement("div",{className:"bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shadow-lg"},
+      React.createElement("div",null,
+        React.createElement("h1",{className:"text-xl font-bold"},"⚡ Offsite Hub"),
+        React.createElement("div",{className:"flex items-center gap-2 mt-0.5"},
+          React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-bold "+(day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900")},"Day "+day),
+          React.createElement("p",{className:"text-indigo-300 text-xs"},day===1?"Roleplay + Capture":"Synthesis + Engineering")
+        )
+      ),
+      React.createElement("div",{className:"text-right"},
+        React.createElement("span",{className:"inline-flex items-center px-3 py-1 rounded-full text-xs font-bold "+tc.bg+" text-white"},user.name||user.team),
+        React.createElement("p",{className:"text-indigo-300 text-xs mt-0.5 opacity-70"},user.team),
+        React.createElement("p",{className:"text-indigo-300 text-xs cursor-pointer hover:text-white",onClick:function(){setUser(null);}},"Switch →")
+      )
+    ),
+    React.createElement("div",{className:"bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center"},
+      React.createElement("span",null,"📌 ",React.createElement("strong",{className:"text-gray-800"},reqs.length)," requirements"),
+      React.createElement("span",null,"🏷️ ",React.createElement("strong",{className:"text-gray-800"},Array.from(new Set(reqs.map(function(r){return r.team;}))).length)," teams"),
+      votingClosed && React.createElement("span",{className:"text-rose-600 font-bold"},"🏁 Voting closed"),
+      React.createElement("span",{className:"flex items-center gap-1.5"},React.createElement(SyncBadge,{status:syncStatus}),syncStatus==="idle"&&lastRefresh&&React.createElement("span",{className:"text-gray-300"},"Synced "+lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}))),
+      React.createElement("button",{onClick:function(){setDay(function(d){return d===1?2:1;});},className:"ml-auto text-indigo-500 hover:underline"},"Switch to Day "+(day===1?2:1)+" →")
+    ),
+    React.createElement("div",{className:"flex border-b bg-white px-4 overflow-x-auto"},
+      tabs.map(function(t,i){
+        return React.createElement("button",{key:i,onClick:function(){setTab(i);},className:"px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors "+(tab===i?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700")},tabEmojis[i]+" "+t);
+      })
+    ),
+    React.createElement("div",{className:(day===2&&tab===2?"px-5 py-5":"max-w-3xl mx-auto p-5")+" space-y-4"},
+      day===1 && React.createElement(TeamContextPanel,{team:user.team}),
+      day===1&&tab===0 && React.createElement(SubmitTab,{user:user,onSave:addReq,syncStatus:syncStatus}),
+      day===1&&tab===1 && React.createElement(RequirementsTab,{reqs:reqs,user:user,onUpdate:updateReq,onDelete:deleteReq,syncStatus:syncStatus}),
+      day===2&&tab===0 && React.createElement(ReadOutTab,{reqs:reqs,onUpdate:updateReq}),
+      day===2&&tab===1 && React.createElement(SynthesisVoteTab,{reqs:reqs,votes:votes,votingClosed:votingClosed,user:user,onVote:castVote,onCloseVoting:closeVoting,onResetVoting:resetVoting,onUpdateReq:updateReq}),
+      day===2&&tab===2 && React.createElement(EngineeringTab,{reqs:reqs,votes:votes,user:user})
+    )
+  );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App,null));
 </script>
 </body>
 </html>
