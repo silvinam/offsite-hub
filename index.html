@@ -64,8 +64,10 @@ function loadVoting() {
 
 // Normalize a row coming from the sheet — coerce booleans stored as strings
 function normalizeReq(r) {
+  // handle both "easywin" (sheet header) and "easyWin" (camelCase)
+  var raw = r.easyWin !== undefined ? r.easyWin : r.easywin;
   return Object.assign({}, r, {
-    easyWin: r.easyWin === true || r.easyWin === "true" || r.easyWin === "TRUE" || r.easyWin === 1 || r.easyWin === "1"
+    easyWin: raw === true || raw === "true" || raw === "TRUE" || raw === 1 || raw === "1"
   });
 }
 
@@ -593,7 +595,6 @@ function SynthesisVoteTab(props) {
     return React.createElement("div",{className:"space-y-4"},
       React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"},React.createElement("span",{className:"text-2xl"},"🏁"),React.createElement("div",null,React.createElement("p",{className:"text-sm font-bold text-emerald-700"},"Voting closed — final ranking"),React.createElement("p",{className:"text-xs text-emerald-600"},"Sorted by votes + self-score"))),
       results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket)),React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))),React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")),expanded===r.id&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))));}),
-      React.createElement("button",{onClick:onResetVoting,className:"w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50"},"🔄 Reset voting")
     );
   }
   return React.createElement("div",{className:"space-y-4"},
@@ -634,8 +635,7 @@ function SynthesisVoteTab(props) {
     React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
       React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-700"},"Voting status"),React.createElement("span",{className:"text-xs text-gray-400"},votedCount+"/"+totalPeople+" people voted")),
       teamStatus.map(function(ts){return React.createElement("div",{key:ts.team,className:"flex items-center gap-2 text-xs"},React.createElement("div",{className:"w-2 h-2 rounded-full flex-shrink-0 "+(ts.voted>0?"bg-emerald-500":"bg-gray-300")}),React.createElement("span",{className:"flex-1 "+(ts.voted>0?"text-gray-700 font-semibold":"text-gray-400")},ts.team),React.createElement("span",{className:ts.voted===ts.total?"text-emerald-600 font-bold":"text-gray-400"},ts.voted+"/"+ts.total+" voted"));}),
-      React.createElement("button",{onClick:onCloseVoting,className:"w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700"},"🏁 Close voting & show results"),
-      React.createElement("button",{onClick:onResetVoting,className:"w-full py-2.5 border-2 border-gray-200 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-50"},"🔄 Reset all votes")
+      React.createElement("button",{onClick:onCloseVoting,className:"w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700"},"🏁 Close voting & show results")
     )
   );
 }
@@ -809,6 +809,11 @@ function App() {
   function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function updateReq(id,patch){
+    // map easyWin → easywin to match sheet column header
+    if (patch.hasOwnProperty("easyWin")) {
+      patch = Object.assign({}, patch, {easywin: patch.easyWin});
+      delete patch.easyWin;
+    }
     var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});
     setReqs(updated);
     withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});
