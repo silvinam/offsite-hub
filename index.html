@@ -65,7 +65,7 @@ function loadVoting() {
 // Normalize a row coming from the sheet — coerce booleans stored as strings
 function normalizeReq(r) {
   return Object.assign({}, r, {
-    easyWin: r.easyWin === true || r.easyWin === "true" || r.easyWin === "TRUE"
+    easyWin: r.easyWin === true || r.easyWin === "true" || r.easyWin === "TRUE" || r.easyWin === 1 || r.easyWin === "1"
   });
 }
 
@@ -802,7 +802,15 @@ function App() {
 
   function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
-  function updateReq(id,patch){var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});setReqs(updated);withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});}
+  function updateReq(id,patch){
+    // Serialize easyWin as 1/0 so the sheet stores a number, not "true"/"false" string
+    if (patch.hasOwnProperty("easyWin")) {
+      patch = Object.assign({}, patch, {easyWin: patch.easyWin ? 1 : 0});
+    }
+    var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});
+    setReqs(updated);
+    withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});
+  }
   function deleteReq(id){setReqs(function(p){return p.filter(function(r){return r.id!==id;});});withSync(function(){return gs.del("requirements",id);});}
 
   function castVote(reqId,pts){var vid=voterId(user);var sid=String(reqId);setVotes(function(prev){var myV=Object.assign({},prev[vid]||{});if(pts===0){delete myV[sid];}else{myV[sid]=pts;}var next=Object.assign({},prev);next[vid]=myV;gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:myV});return next;});}
