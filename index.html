@@ -814,7 +814,10 @@ function App() {
       patch = Object.assign({}, patch, {easywin: patch.easyWin});
       delete patch.easyWin;
     }
-    var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,patch):r;});
+    // strip any engineering/task fields that should never go to the sheet
+    var clean = Object.assign({}, patch);
+    ["approved","isTask","taskMeta","tickets","reqIds","openQuestions"].forEach(function(k){ delete clean[k]; });
+    var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,clean):r;});
     setReqs(updated);
     withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});
   }
