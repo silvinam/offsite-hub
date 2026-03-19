@@ -45,8 +45,8 @@ var gs = {
       .then(function(r) { return r.json(); })
       .catch(function(e) { return {ok: false, error: String(e)}; });
   },
-  generateEpics: function(requirements, ctx) {
-    return fetch(GS_URL + "?action=generate_epics&data=" + encodeURIComponent(JSON.stringify({requirements: requirements, additionalContext: ctx})))
+  generateEpics: function(requirements, ctx, mode) {
+    return fetch(GS_URL + "?action=generate_epics&data=" + encodeURIComponent(JSON.stringify({requirements: requirements, additionalContext: ctx, mode: mode||"epics"})))
       .then(function(r) { return r.json(); });
   }
 };
