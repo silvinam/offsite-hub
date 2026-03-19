@@ -24,30 +24,30 @@ var gs = {
       .then(function(r) { return r.json(); })
       .catch(function() { return []; });
   },
+  post: function(body) {
+    return fetch(GS_URL, {
+      method: "POST",
+      body: JSON.stringify(body)
+    }).then(function(r) { return r.json(); }).catch(function(e) { return {ok:false,error:String(e)}; });
+  },
   upsert: function(s, d) {
-    return fetch(GS_URL + "?action=upsert&sheet=" + encodeURIComponent(s) + "&data=" + encodeURIComponent(JSON.stringify(d)))
-      .catch(function() {});
+    return gs.post({action:"upsert", sheet:s, data:d}).catch(function(){});
   },
   del: function(s, id) {
-    return fetch(GS_URL + "?action=delete&sheet=" + encodeURIComponent(s) + "&data=" + encodeURIComponent(JSON.stringify({id: id})))
-      .catch(function() {});
+    return gs.post({action:"delete", sheet:s, data:{id:id}}).catch(function(){});
   },
   translate: function(fields) {
     var entries = Object.entries(fields).filter(function(e) { return e[1] && typeof e[1] === "string" && e[1].trim(); });
     if (!entries.length) return Promise.resolve(fields);
-    return fetch(GS_URL + "?action=translate&data=" + encodeURIComponent(JSON.stringify(Object.fromEntries(entries))))
-      .then(function(r) { return r.json(); })
+    return gs.post({action:"translate", data:Object.fromEntries(entries)})
       .then(function(j) { return Object.assign({}, fields, j); })
       .catch(function() { return fields; });
   },
   jira: function(epics) {
-    return fetch(GS_URL + "?action=jira&data=" + encodeURIComponent(JSON.stringify(epics)))
-      .then(function(r) { return r.json(); })
-      .catch(function(e) { return {ok: false, error: String(e)}; });
+    return gs.post({action:"jira", data:epics});
   },
   generateEpics: function(requirements, ctx, mode) {
-    return fetch(GS_URL + "?action=generate_epics&data=" + encodeURIComponent(JSON.stringify({requirements: requirements, additionalContext: ctx, mode: mode||"epics"})))
-      .then(function(r) { return r.json(); });
+    return gs.post({action:"generate_epics", data:{requirements:requirements, additionalContext:ctx, mode:mode||"epics"}});
   }
 };
 
@@ -62,9 +62,7 @@ function loadVoting() {
   });
 }
 
-// Normalize a row coming from the sheet — coerce booleans stored as strings
 function normalizeReq(r) {
-  // handle both "easywin" (sheet header) and "easyWin" (camelCase)
   var raw = r.easyWin !== undefined ? r.easyWin : r.easywin;
   return Object.assign({}, r, {
     easyWin: raw === true || raw === "true" || raw === "TRUE" || raw === 1 || raw === "1"
@@ -159,6 +157,7 @@ function getCategory(r) { return r.recommended_category || r.category || ""; }
 function voterId(user) { return (user.name||user.team).toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,""); }
 function sortedByScore(arr) { return arr.slice().sort(function(a,b){return getScore(b)-getScore(a);}); }
 function isEasyWin(r) { return r.easyWin === true || r.easyWin === "true" || r.easyWin === "TRUE"; }
+function isInJira(r) { return !!(r.jiraKey && String(r.jiraKey).trim()); }
 
 // ── Primitives ───────────────────────────────────────────────
 function Badge(props) {
@@ -278,6 +277,19 @@ function Field(props) {
       props.tipKey&&FIELD_TOOLTIPS[props.tipKey]&&React.createElement(Tooltip,{tip:FIELD_TOOLTIPS[props.tipKey]})
     ),
     props.children
+  );
+}
+
+// ── Jira Badge ───────────────────────────────────────────────
+function JiraBadge(props) {
+  var key = props.jiraKey;
+  if (!key) return null;
+  return React.createElement("span", {
+    className: "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-bold bg-blue-600 text-white whitespace-nowrap",
+    title: "Pushed to Jira as " + key
+  },
+    React.createElement("span", null, "🔷"),
+    key
   );
 }
 
@@ -401,7 +413,6 @@ function RequirementsTab(props) {
   var s1=useState(null); var expanded=s1[0]; var setExpanded=s1[1];
   var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
   var s3=useState(null); var editForm=s3[0]; var setEditForm=s3[1];
-  // multi-select filters
   var s4=useState([user.team]); var fTeams=s4[0]; var setFTeams=s4[1];
   var s5=useState([]); var fStages=s5[0]; var setFStages=s5[1];
 
@@ -419,7 +430,6 @@ function RequirementsTab(props) {
   var ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
 
   return React.createElement("div",{className:"space-y-4"},
-    // ── Filter bar ──
     React.createElement("div",{className:"bg-white rounded-xl border p-3 space-y-3"},
       React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},
         React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),
@@ -441,7 +451,7 @@ function RequirementsTab(props) {
       ? React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet."))
       : ranked.map(function(r){
           var tc=teamColor(r.team); var isOwner=r.team===user.team; var isEditing=editing===r.id; var score=getScore(r);
-          var isTop5=top5ids.includes(r.id); var cat=getCategory(r); var ew=isEasyWin(r);
+          var isTop5=top5ids.includes(r.id); var cat=getCategory(r); var ew=isEasyWin(r); var inJira=isInJira(r);
           return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(isTop5?" border-l-4 border-l-indigo-500":"")},
             React.createElement("div",{className:"p-4 cursor-pointer hover:bg-gray-50",onClick:function(){if(!isEditing)setExpanded(expanded===r.id?null:r.id);}},
               React.createElement("div",{className:"flex items-start gap-3"},
@@ -454,7 +464,8 @@ function RequirementsTab(props) {
                     r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),
                     cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),
                     score>0&&React.createElement(Badge,{cls:"bg-slate-100 text-slate-700"},"⭐ "+score+"/20"),
-                    ew&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win")
+                    ew&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),
+                    inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey})
                   )
                 ),
                 React.createElement("span",{className:"text-gray-300 text-lg mt-0.5"},expanded===r.id?"▲":"▼")
@@ -542,7 +553,7 @@ function ReadOutTab(props) {
       :React.createElement("div",{className:"space-y-4"},
           current&&!editing&&React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4"},
             React.createElement("div",{className:"flex items-start justify-between gap-3"},
-              React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},React.createElement(Badge,{cls:tc.badge},current.team),current.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+current.submittedBy),isEasyWin(current)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),React.createElement("span",{className:"text-xs font-bold text-gray-400"},"#"+(cursor+1)+" of "+teamReqs.length)),
+              React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},React.createElement(Badge,{cls:tc.badge},current.team),current.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+current.submittedBy),isEasyWin(current)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),isInJira(current)&&React.createElement(JiraBadge,{jiraKey:current.jiraKey}),React.createElement("span",{className:"text-xs font-bold text-gray-400"},"#"+(cursor+1)+" of "+teamReqs.length)),
               React.createElement("button",{onClick:function(){setEditing(true);setEditForm(Object.assign({},current));},className:"text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0"},"✏️ Edit")
             ),
             React.createElement("p",{className:"text-xl font-black text-gray-900 leading-snug"},current.problem),
@@ -567,7 +578,7 @@ function ReadOutTab(props) {
             React.createElement("button",{onClick:function(){setCursor(function(c){return Math.max(0,c-1);});setEditing(false);},disabled:cursor===0,className:"flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50"},"← Previous"),
             React.createElement("button",{onClick:function(){setCursor(function(c){return Math.min(teamReqs.length-1,c+1);});setEditing(false);},disabled:cursor===teamReqs.length-1,className:"flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50"},"Next →")
           ),
-          React.createElement("div",{className:"space-y-1"},teamReqs.map(function(r,i){var s=getScore(r);return React.createElement("button",{key:r.id,onClick:function(){setCursor(i);setEditing(false);},className:"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")},React.createElement("span",{className:"font-black text-gray-300 w-4"},"#"+(i+1)),React.createElement("span",{className:"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")},r.problem),isEasyWin(r)&&React.createElement("span",{className:"text-green-500 text-xs"},"⚡"),React.createElement("span",{className:"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")},s+"pts"));}))
+          React.createElement("div",{className:"space-y-1"},teamReqs.map(function(r,i){var s=getScore(r);return React.createElement("button",{key:r.id,onClick:function(){setCursor(i);setEditing(false);},className:"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")},React.createElement("span",{className:"font-black text-gray-300 w-4"},"#"+(i+1)),React.createElement("span",{className:"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")},r.problem),isEasyWin(r)&&React.createElement("span",{className:"text-green-500 text-xs"},"⚡"),isInJira(r)&&React.createElement("span",{className:"text-blue-500 text-xs"},"🔷"),React.createElement("span",{className:"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")},s+"pts"));}))
         )
   );
 }
@@ -594,7 +605,7 @@ function SynthesisVoteTab(props) {
     var results=reqs.filter(function(r){return !isEasyWin(r);}).map(function(r){return Object.assign({},r,{totalVotes:getTotalVotes(r.id),selfScore:getScore(r)});}).sort(function(a,b){return (b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore);});
     return React.createElement("div",{className:"space-y-4"},
       React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"},React.createElement("span",{className:"text-2xl"},"🏁"),React.createElement("div",null,React.createElement("p",{className:"text-sm font-bold text-emerald-700"},"Voting closed — final ranking"),React.createElement("p",{className:"text-xs text-emerald-600"},"Sorted by votes + self-score"))),
-      results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket)),React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))),React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")),expanded===r.id&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))));}),
+      results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey})),React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))),React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")),expanded===r.id&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))));}),
     );
   }
   return React.createElement("div",{className:"space-y-4"},
@@ -614,7 +625,7 @@ function SynthesisVoteTab(props) {
       return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(myVote>0?" border-indigo-300 border-2":"")},
         React.createElement("div",{className:"p-4"},
           React.createElement("div",{className:"flex items-start gap-3 cursor-pointer",onClick:function(){setExpanded(isOpen?null:r.id);}},
-            React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency))),
+            React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
             React.createElement("div",{className:"text-right flex-shrink-0"},React.createElement("div",{className:"text-xl font-black text-indigo-600"},score),React.createElement("div",{className:"text-xs text-gray-400"},"score"),totalVotes>0&&React.createElement("div",{className:"text-xs font-bold text-emerald-600"},totalVotes+"🗳️")),
             React.createElement("span",{className:"text-gray-300 mt-1"},isOpen?"▲":"▼")
           ),
@@ -650,8 +661,51 @@ function BestPracticesPanel() {
   );
 }
 
+// ── Jira Key Manual Input ────────────────────────────────────
+function JiraKeyInput(props) {
+  var req = props.req;
+  var onSave = props.onSave;
+  var s1 = useState(req.jiraKey || ""); var val = s1[0]; var setVal = s1[1];
+  var s2 = useState(false); var saved = s2[0]; var setSaved = s2[1];
+  var current = req.jiraKey || "";
+
+  function save() {
+    if (!val.trim()) return;
+    onSave(val.trim().toUpperCase());
+    setSaved(true);
+    setTimeout(function() { setSaved(false); }, 2000);
+  }
+  function clear() {
+    onSave("");
+    setVal("");
+  }
+
+  return React.createElement("div", { className: "border border-gray-200 rounded-xl p-3 space-y-2 bg-white" },
+    React.createElement("p", { className: "text-xs font-bold text-gray-600" }, "🔷 Jira key"),
+    current
+      ? React.createElement("div", { className: "flex items-center gap-2" },
+          React.createElement("span", { className: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-bold bg-blue-600 text-white" }, "🔷 ", current),
+          React.createElement("button", { onClick: clear, className: "text-xs text-gray-400 hover:text-rose-500 font-semibold" }, "✕ Clear")
+        )
+      : React.createElement("div", { className: "flex gap-2" },
+          React.createElement("input", {
+            className: "flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-400",
+            placeholder: "ej: OFF-12",
+            value: val,
+            onChange: function(e) { setVal(e.target.value); },
+            onKeyDown: function(e) { if (e.key === "Enter") save(); }
+          }),
+          React.createElement("button", {
+            onClick: save,
+            disabled: !val.trim(),
+            className: "px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-30"
+          }, saved ? "✓ Saved" : "Save")
+        )
+  );
+}
+
 function EngineeringTab(props) {
-  var reqs=props.reqs; var votes=props.votes; var user=props.user;
+  var reqs=props.reqs; var votes=props.votes; var user=props.user; var onUpdateReq=props.onUpdateReq;
   var s1=useState("select"); var step=s1[0]; var setStep=s1[1];
   var s2=useState([]); var selectedIds=s2[0]; var setSelected=s2[1];
   var s3=useState({}); var reqContexts=s3[0]; var setReqContexts=s3[1];
@@ -663,8 +717,7 @@ function EngineeringTab(props) {
   var s9=useState(""); var genError=s9[0]; var setGenError=s9[1];
   var s10=useState(""); var jsonInput=s10[0]; var setJsonInput=s10[1];
   var s11=useState(""); var jsonError=s11[0]; var setJsonError=s11[1];
-  var s12=useState([]); var pushedIds=s12[0]; var setPushedIds=s12[1];
-  var s13=useState(null); var pushResult=s13[0]; var setPushResult=s13[1];
+  var s12=useState(null); var pushResult=s12[0]; var setPushResult=s12[1];
 
   function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=Number(v[String(id)])||0;});return t;}
   function combinedScore(r){return getScore(r)+getTotalVotes(r.id);}
@@ -693,7 +746,36 @@ function EngineeringTab(props) {
   function updateTicket(eIdx,tIdx,patch){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.map(function(t,j){return j===tIdx?Object.assign({},t,patch):t;})}):e;});});}
   function removeTicket(eIdx,tIdx){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.filter(function(_,j){return j!==tIdx;})}):e;});});}
   var approvedEpics=epics.filter(function(e){return e.approved;});
-  function pushToJira(){if(!approvedEpics.length)return;setStep("pushing");gs.jira(approvedEpics).then(function(result){setPushResult(result);if(result&&result.ok){var ids=approvedEpics.reduce(function(a,e){return a.concat(e.reqIds||[]);},[]); setPushedIds(function(prev){return Array.from(new Set(prev.concat(ids)));});}setStep("done");});}
+
+  // ── Push to Jira + persist jiraKey back to each requirement ──
+  function pushToJira(){
+    if(!approvedEpics.length)return;
+    setStep("pushing");
+    gs.jira(approvedEpics).then(function(result){
+      setPushResult(result);
+      if(result && result.ok && onUpdateReq) {
+        // result.keys is expected to be an array like ["OFF-12", "OFF-13", …]
+        // result.reqKeyMap is expected to be { "reqId": "JIRA-KEY", … } if the Apps Script returns it
+        // We support both: a flat map (reqKeyMap) or a fallback using the epic's reqIds + keys array
+        var keyMap = result.reqKeyMap || {};
+        // fallback: map reqIds from each approved epic to the corresponding key
+        if(!Object.keys(keyMap).length && Array.isArray(result.keys)) {
+          approvedEpics.forEach(function(epic, i) {
+            var key = result.keys[i];
+            if(key) {
+              (epic.reqIds || []).forEach(function(rid) { keyMap[String(rid)] = key; });
+            }
+          });
+        }
+        // persist jiraKey to each touched requirement
+        Object.entries(keyMap).forEach(function(entry) {
+          var rid = entry[0]; var key = entry[1];
+          onUpdateReq(Number(rid) || rid, {jiraKey: key});
+        });
+      }
+      setStep("done");
+    });
+  }
 
   if(step==="done") return React.createElement("div",{className:"space-y-4"},pushResult&&pushResult.ok?React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"🎉"),React.createElement("p",{className:"text-xl font-black text-emerald-700"},"Done! Pushed to Jira"),React.createElement("p",{className:"text-sm text-emerald-600"},"Epics: ",React.createElement("strong",null,pushResult.keys&&pushResult.keys.join(", ")))):React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"⚠️"),React.createElement("p",{className:"text-xl font-black text-rose-700"},"Something went wrong"),React.createElement("p",{className:"text-xs text-rose-500 font-mono"},(pushResult&&pushResult.error)||"Unknown error")),React.createElement("button",{onClick:function(){setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);},className:"w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"},"← Start over"));
   if(step==="pushing") return React.createElement("div",{className:"flex flex-col items-center justify-center py-32 gap-4 text-gray-400"},React.createElement("div",{className:"text-6xl animate-bounce"},"🚀"),React.createElement("p",{className:"text-sm font-bold text-gray-600"},"Pushing to Jira…"));
@@ -730,7 +812,6 @@ function EngineeringTab(props) {
   return React.createElement("div",{className:"flex gap-4 items-start"},
     React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},
       React.createElement("div",{className:"bg-white rounded-xl border p-4"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"⚙️ Engineering — All requirements"),React.createElement("p",{className:"text-xs text-gray-500 mt-0.5"},"Sorted by score + votes, grouped by category. Filter by team.")),
-      // multi-select team filter
       React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center"},
         React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),
         React.createElement(FilterChip,{label:"All",active:fTeams.length===0,onClick:function(){setFTeams([]);setSelected([]);}}),
@@ -754,11 +835,11 @@ function EngineeringTab(props) {
               return React.createElement("div",{key:cat,className:"bg-white rounded-xl border shadow-sm overflow-hidden"},
                 React.createElement("div",{className:catBg+" px-4 py-2.5 flex items-center justify-between"},React.createElement("span",{className:"text-xs font-bold text-white"},"🏷️ "+cat),React.createElement("div",{className:"flex items-center gap-3"},React.createElement("span",{className:"text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full"},catReqs.length),React.createElement("button",{onClick:function(){toggleCat(catReqs);},className:"text-xs text-white opacity-80 hover:opacity-100 font-semibold"},allSel?"Deselect all":"Select all"))),
                 React.createElement("div",{className:"divide-y"},catReqs.map(function(r){
-                  var tc=teamColor(r.team);var sel=selectedIds.includes(r.id);var score=getScore(r);var vts=getTotalVotes(r.id);var isExp=expandedReq===r.id;var isPushed=pushedIds.includes(String(r.id));var bucket=autoBucket(score);
-                  return React.createElement("div",{key:r.id,className:"overflow-hidden"+(isPushed?" border-l-4 border-l-emerald-400":"")},
+                  var tc=teamColor(r.team);var sel=selectedIds.includes(r.id);var score=getScore(r);var vts=getTotalVotes(r.id);var isExp=expandedReq===r.id;var inJira=isInJira(r);var bucket=autoBucket(score);
+                  return React.createElement("div",{key:r.id,className:"overflow-hidden"+(inJira?" border-l-4 border-l-blue-400":"")},
                     React.createElement("div",{onClick:function(){toggleReq(r.id);},className:"flex items-start gap-3 px-4 py-3 cursor-pointer transition-all "+(sel?"bg-indigo-50":"hover:bg-gray-50")},
                       React.createElement("div",{className:"mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(sel?"bg-indigo-600 border-indigo-600":"border-gray-300")},sel&&React.createElement("span",{className:"text-white text-xs"},"✓")),
-                      React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),score>0&&React.createElement("span",{className:"text-xs text-indigo-500 font-bold"},"⭐"+score),vts>0&&React.createElement("span",{className:"text-xs text-emerald-600 font-bold"},"🗳️"+vts),isEasyWin(r)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),isPushed&&React.createElement(Badge,{cls:"bg-emerald-100 text-emerald-700"},"✅ In Jira"))),
+                      React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),score>0&&React.createElement("span",{className:"text-xs text-indigo-500 font-bold"},"⭐"+score),vts>0&&React.createElement("span",{className:"text-xs text-emerald-600 font-bold"},"🗳️"+vts),isEasyWin(r)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
                       React.createElement("button",{onClick:function(e){e.stopPropagation();setExpandedReq(isExp?null:r.id);},className:"text-gray-300 hover:text-gray-500 text-lg flex-shrink-0"},isExp?"▲":"▼")
                     ),
                     isExp&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
@@ -768,7 +849,8 @@ function EngineeringTab(props) {
                       r.workaround&&React.createElement("div",{className:"bg-slate-100 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-xs text-slate-700"},r.workaround)),
                       r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
                       React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border"},r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),score>0&&React.createElement("div",{className:"col-span-2 flex gap-3 pt-1 border-t mt-1"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Score: "+score+"/20 · "+autoBucket(score)))),
-                      React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-600 block mb-1"},"💬 Additional context ",React.createElement("span",{className:"text-gray-400 font-normal"},"(optional — translates to English)")),React.createElement("textarea",{className:"w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white",rows:3,placeholder:"Notes for engineering before generating…",value:reqContexts[r.id]||"",onChange:function(e){setCtx(r.id,e.target.value);}}))
+                      React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-600 block mb-1"},"💬 Additional context ",React.createElement("span",{className:"text-gray-400 font-normal"},"(optional — translates to English)")),React.createElement("textarea",{className:"w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white",rows:3,placeholder:"Notes for engineering before generating…",value:reqContexts[r.id]||"",onChange:function(e){setCtx(r.id,e.target.value);}})),
+                      React.createElement(JiraKeyInput,{req:r,onSave:function(key){onUpdateReq(r.id,{jiraKey:key});}})
                     )
                   );
                 }))
@@ -809,12 +891,10 @@ function App() {
   function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function updateReq(id,patch){
-    // map easyWin → easywin to match sheet column header
     if (patch.hasOwnProperty("easyWin")) {
       patch = Object.assign({}, patch, {easywin: patch.easyWin});
       delete patch.easyWin;
     }
-    // strip any engineering/task fields that should never go to the sheet
     var clean = Object.assign({}, patch);
     ["approved","isTask","taskMeta","tickets","reqIds","openQuestions"].forEach(function(k){ delete clean[k]; });
     var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,clean):r;});
@@ -853,7 +933,7 @@ function App() {
       day===1&&tab===1&&React.createElement(RequirementsTab,{reqs:reqs,user:user,onUpdate:updateReq,onDelete:deleteReq,syncStatus:syncStatus}),
       day===2&&tab===0&&React.createElement(ReadOutTab,{reqs:reqs,onUpdate:updateReq}),
       day===2&&tab===1&&React.createElement(SynthesisVoteTab,{reqs:reqs,votes:votes,votingClosed:votingClosed,user:user,onVote:castVote,onCloseVoting:closeVoting,onResetVoting:resetVoting,onUpdateReq:updateReq}),
-      day===2&&tab===2&&React.createElement(EngineeringTab,{reqs:reqs,votes:votes,user:user})
+      day===2&&tab===2&&React.createElement(EngineeringTab,{reqs:reqs,votes:votes,user:user,onUpdateReq:updateReq})
     )
   );
 }
