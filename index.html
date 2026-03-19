@@ -284,9 +284,14 @@ function Field(props) {
 function JiraBadge(props) {
   var key = props.jiraKey;
   if (!key) return null;
-  return React.createElement("span", {
-    className: "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-bold bg-blue-600 text-white whitespace-nowrap",
-    title: "Pushed to Jira as " + key
+  var url = "https://readysetco.atlassian.net/browse/" + key;
+  return React.createElement("a", {
+    href: url,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    className: "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-bold bg-blue-600 text-white whitespace-nowrap hover:bg-blue-700 transition-colors",
+    title: "Abrir " + key + " en Jira",
+    onClick: function(e) { e.stopPropagation(); }
   },
     React.createElement("span", null, "🔷"),
     key
