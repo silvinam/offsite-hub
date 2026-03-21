@@ -14,12 +14,118 @@
 <div id="root"></div>
 <script type="text/babel">
 var useState = React.useState;
-var GOOGLE_CLIENT_ID = "1076609274638-c3bdl17dhh2ttr6tmc9sp0ktnhbrfonq.apps.googleusercontent.com";  
 var useEffect = React.useEffect;
 var useRef = React.useRef;
 
+// ── CONFIG ────────────────────────────────────────────────────
+// Reemplazá este valor con tu Google OAuth Client ID
+// Crealo en: https://console.cloud.google.com → APIs & Services → Credentials → OAuth 2.0 Client ID
+// Authorized JavaScript origins: el dominio donde hosteas esto (o http://localhost para dev)
+var GOOGLE_CLIENT_ID = "1076609274638-c3bdl17dhh2ttr6tmc9sp0ktnhbrfonq.apps.googleusercontent.com";
+var ALLOWED_DOMAIN   = "airpost.ai";
+
 var GS_URL = "https://script.google.com/macros/s/AKfycbxxVRHIN6wJzC56mjt-B1Cipji0xg0Wq0CH2F2kd4UivvOLjs49gxmJ4WrBTuc7XC64/exec";
 
+// ── GOOGLE AUTH ───────────────────────────────────────────────
+function parseJwt(token) {
+  try {
+    return JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/")));
+  } catch(e) { return null; }
+}
+
+function GoogleAuthGate(props) {
+  var s1 = useState(null);  var authError = s1[0]; var setAuthError = s1[1];
+  var s2 = useState(false); var loading = s2[0];   var setLoading = s2[1];
+  var btnRef = useRef(null);
+
+  useEffect(function() {
+    // Wait for the GSI SDK to load, then render the button
+    var interval = setInterval(function() {
+      if (window.google && window.google.accounts && btnRef.current) {
+        clearInterval(interval);
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: handleCredential,
+          auto_select: false,
+          cancel_on_tap_outside: true
+        });
+        window.google.accounts.id.renderButton(btnRef.current, {
+          theme: "outline",
+          size: "large",
+          text: "signin_with",
+          shape: "rectangular",
+          logo_alignment: "left",
+          width: 280
+        });
+      }
+    }, 200);
+    return function() { clearInterval(interval); };
+  }, []);
+
+  function handleCredential(response) {
+    setLoading(true);
+    setAuthError(null);
+    var payload = parseJwt(response.credential);
+    if (!payload) {
+      setAuthError("No se pudo verificar el token. Intentá de nuevo.");
+      setLoading(false);
+      return;
+    }
+    var email = payload.email || "";
+    var domain = email.split("@")[1] || "";
+    if (domain !== ALLOWED_DOMAIN) {
+      setAuthError("Acceso denegado. Solo se permiten cuentas @" + ALLOWED_DOMAIN + ".\nTu cuenta: " + email);
+      setLoading(false);
+      // Sign out immediately so they can try again with a different account
+      if (window.google && window.google.accounts) {
+        window.google.accounts.id.disableAutoSelect();
+      }
+      return;
+    }
+    setLoading(false);
+    props.onAuth({
+      email: email,
+      name: payload.name || email,
+      picture: payload.picture || null
+    });
+  }
+
+  return React.createElement("div", {
+    className: "min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6"
+  },
+    React.createElement("div", {
+      className: "bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6 text-center"
+    },
+      React.createElement("div", null,
+        React.createElement("div", { className: "text-5xl mb-3" }, "⚡"),
+        React.createElement("h1", { className: "text-2xl font-black text-gray-900" }, "Offsite Hub"),
+        React.createElement("p", { className: "text-gray-400 text-xs mt-1" }, "Operations × Engineering · March 2026")
+      ),
+      React.createElement("div", {
+        className: "bg-indigo-50 border border-indigo-200 rounded-2xl px-4 py-3 text-xs text-indigo-700 text-left space-y-1"
+      },
+        React.createElement("p", { className: "font-bold" }, "🔒 Acceso restringido"),
+        React.createElement("p", null, "Solo cuentas ", React.createElement("strong", null, "@" + ALLOWED_DOMAIN), " pueden ingresar.")
+      ),
+      loading
+        ? React.createElement("div", { className: "flex items-center justify-center gap-2 py-4 text-gray-400 text-sm" },
+            React.createElement("span", { className: "animate-spin" }, "⏳"),
+            "Verificando…"
+          )
+        : React.createElement("div", { className: "flex justify-center" },
+            React.createElement("div", { ref: btnRef })
+          ),
+      authError && React.createElement("div", {
+        className: "bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-700 text-left whitespace-pre-line"
+      },
+        React.createElement("p", { className: "font-bold mb-1" }, "⛔ Acceso denegado"),
+        authError
+      )
+    )
+  );
+}
+
+// ── GS helpers ───────────────────────────────────────────────
 var gs = {
   get: function(s) {
     return fetch(GS_URL + "?sheet=" + encodeURIComponent(s))
@@ -88,8 +194,6 @@ var AGENT_META = {
   "Orchestrated by an agent": {emoji: "🕸️", desc: "Agent coordinates multiple steps autonomously."},
   "Not suitable for AI": {emoji: "🚫", desc: "Requires human judgment or creative intuition."}
 };
-var BASE_CLUSTERS = ["Onboarding structure","Creative intelligence","Rendering architecture","Tooling gaps","Automation","Ops scalability","Unclustered","Other"];
-var BASE_CATEGORIES = ["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Other"];
 var BUCKETS = ["Must-fix","Scale enabler","Strategic bet"];
 var TEAMS = ["The Client","Editing 1","Editing 2","Footage Production","PM","Creative Strategy"];
 var TABS_D1 = ["Submit","Requirements"];
@@ -248,21 +352,6 @@ function EasyWinTooltip() {
     )
   );
 }
-function OtherSelect(props) {
-  var knownOptions = props.options.filter(function(o){return o!=="Other";});
-  var isCustom = props.value && !knownOptions.includes(props.value) && props.value !== "Other" && props.value !== "";
-  var s1 = useState(isCustom ? "Other" : (props.value||"")); var sel = s1[0]; var setSel = s1[1];
-  var s2 = useState(isCustom ? props.value : ""); var custom = s2[0]; var setCustom = s2[1];
-  var s3 = useState(isCustom); var showInput = s3[0]; var setShowInput = s3[1];
-  function handleSel(v) { setSel(v); if(v==="Other"){setShowInput(true);props.onChange("");}else{setShowInput(false);setCustom("");props.onChange(v);} }
-  return React.createElement("div", {className: "space-y-1.5"},
-    React.createElement("select", {className:"w-full border rounded-lg px-2 py-1.5 text-xs bg-white",value:sel,onChange:function(e){handleSel(e.target.value);}},
-      React.createElement("option",{value:""},props.placeholder||"Select…"),
-      props.options.map(function(o){return React.createElement("option",{key:o},o);})
-    ),
-    showInput && React.createElement("input",{className:"w-full border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-indigo-400",placeholder:"Describe…",value:custom,onChange:function(e){setCustom(e.target.value);props.onChange(e.target.value);}})
-  );
-}
 function Section(props) {
   return React.createElement("div",{className:"rounded-2xl border shadow-sm overflow-hidden"},
     React.createElement("div",{className:props.bgColor+" px-5 py-4 flex items-center gap-3"},
@@ -282,25 +371,18 @@ function Field(props) {
   );
 }
 
-// ── Jira Badge ───────────────────────────────────────────────
 function JiraBadge(props) {
   var key = props.jiraKey;
   if (!key) return null;
   var url = "https://readysetco.atlassian.net/browse/" + key;
   return React.createElement("a", {
-    href: url,
-    target: "_blank",
-    rel: "noopener noreferrer",
+    href: url, target: "_blank", rel: "noopener noreferrer",
     className: "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-bold bg-blue-600 text-white whitespace-nowrap hover:bg-blue-700 transition-colors",
     title: "Abrir " + key + " en Jira",
     onClick: function(e) { e.stopPropagation(); }
-  },
-    React.createElement("span", null, "🔷"),
-    key
-  );
+  }, React.createElement("span", null, "🔷"), key);
 }
 
-// ── Team Context Panel ───────────────────────────────────────
 function TeamContextPanel(props) {
   var team = props.team;
   var s = useState(false); var open = s[0]; var setOpen = s[1];
@@ -325,19 +407,44 @@ function TeamContextPanel(props) {
   );
 }
 
-// ── Entry Screen ─────────────────────────────────────────────
+// ── Entry Screen (name + day picker, post-auth) ───────────────
 function EntryScreen(props) {
+  var googleUser = props.googleUser;
   var s1=useState(""); var query=s1[0]; var setQuery=s1[1];
   var s2=useState(null); var selected=s2[0]; var setSelected=s2[1];
   var s3=useState(null); var day=s3[0]; var setDay=s3[1];
   var s4=useState(false); var showDD=s4[0]; var setShowDD=s4[1];
   var inputRef = useRef(null);
+
+  // Pre-fill query from Google name
+  useEffect(function() {
+    if (googleUser && googleUser.name) {
+      var gName = googleUser.name;
+      setQuery(gName);
+      // Try to auto-match
+      var match = ALL_MEMBERS.find(function(m) {
+        return m.name.toLowerCase() === gName.toLowerCase() ||
+               gName.toLowerCase().includes(m.name.split(" ")[0].toLowerCase());
+      });
+      if (match) { setSelected(match); setShowDD(false); }
+      else setShowDD(true);
+    }
+  }, []);
+
   var filtered = query.trim().length>=1 ? ALL_MEMBERS.filter(function(m){return m.name.toLowerCase().includes(query.toLowerCase());}) : [];
   function handleSelect(m) { setSelected(m); setQuery(m.name); setShowDD(false); }
   var tc = selected ? teamColor(selected.team) : null;
+
   return React.createElement("div",{className:"min-h-screen bg-gradient-to-br from-indigo-900 to-slate-800 flex items-center justify-center p-6"},
     React.createElement("div",{className:"bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm space-y-6"},
-      React.createElement("div",{className:"text-center"},React.createElement("div",{className:"text-5xl mb-2"},"⚡"),React.createElement("h1",{className:"text-2xl font-black text-gray-900"},"Offsite Hub"),React.createElement("p",{className:"text-gray-400 text-xs"},"Operations × Engineering · March 2026")),
+      React.createElement("div",{className:"text-center"},
+        googleUser && googleUser.picture
+          ? React.createElement("img",{src:googleUser.picture,className:"w-12 h-12 rounded-full mx-auto mb-2 border-2 border-indigo-200"})
+          : React.createElement("div",{className:"text-5xl mb-2"},"⚡"),
+        React.createElement("h1",{className:"text-2xl font-black text-gray-900"},"Offsite Hub"),
+        React.createElement("p",{className:"text-gray-400 text-xs"},"Operations × Engineering · March 2026"),
+        googleUser && React.createElement("p",{className:"text-xs text-emerald-600 font-semibold mt-1"},"✓ "+googleUser.email)
+      ),
       React.createElement("div",{className:"space-y-2"},
         React.createElement("label",{className:"text-sm font-bold text-gray-700 block"},"Who are you?"),
         React.createElement("div",{className:"relative"},
@@ -361,7 +468,7 @@ function EntryScreen(props) {
         )
       ),
       React.createElement("button",{onClick:function(){if(selected&&day)props.onEnter(selected.team,day,selected.name);},disabled:!selected||!day,className:"w-full bg-indigo-600 text-white rounded-xl py-3 font-bold text-sm hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed"},"Enter the Hub →"),
-      !selected && React.createElement("p",{className:"text-center text-xs text-gray-300"},"Search your name to get started")
+      React.createElement("button",{onClick:props.onSignOut,className:"w-full text-xs text-gray-400 hover:text-gray-600 py-1"},"← Sign out")
     )
   );
 }
@@ -414,7 +521,6 @@ function SubmitTab(props) {
   );
 }
 
-// ── Requirements Tab ─────────────────────────────────────────
 function RequirementsTab(props) {
   var reqs=props.reqs; var user=props.user; var onUpdate=props.onUpdate; var onDelete=props.onDelete; var syncStatus=props.syncStatus;
   var s1=useState(null); var expanded=s1[0]; var setExpanded=s1[1];
@@ -422,116 +528,54 @@ function RequirementsTab(props) {
   var s3=useState(null); var editForm=s3[0]; var setEditForm=s3[1];
   var s4=useState([user.team]); var fTeams=s4[0]; var setFTeams=s4[1];
   var s5=useState([]); var fStages=s5[0]; var setFStages=s5[1];
-
-  function toggleTeam(t) { setFTeams(function(p){return p.includes(t)?p.filter(function(x){return x!==t;}):[].concat(p,[t]);}); }
-  function toggleStage(s) { setFStages(function(p){return p.includes(s)?p.filter(function(x){return x!==s;}):[].concat(p,[s]);}); }
-
-  var filtered = reqs.filter(function(r){
-    var teamOk = fTeams.length===0 || fTeams.includes(r.team);
-    var stageOk = fStages.length===0 || fStages.includes(r.pipelineStage);
-    return teamOk && stageOk;
-  });
-  var ranked = sortedByScore(filtered);
-  var myTeamReqs = reqs.filter(function(r){return r.team===user.team;});
-  var top5ids = sortedByScore(myTeamReqs).slice(0,5).filter(function(r){return getScore(r)>0;}).map(function(r){return r.id;});
+  function toggleTeam(t){setFTeams(function(p){return p.includes(t)?p.filter(function(x){return x!==t;}):[].concat(p,[t]);});}
+  function toggleStage(s){setFStages(function(p){return p.includes(s)?p.filter(function(x){return x!==s;}):[].concat(p,[s]);});}
+  var filtered=reqs.filter(function(r){var teamOk=fTeams.length===0||fTeams.includes(r.team);var stageOk=fStages.length===0||fStages.includes(r.pipelineStage);return teamOk&&stageOk;});
+  var ranked=sortedByScore(filtered);
+  var myTeamReqs=reqs.filter(function(r){return r.team===user.team;});
+  var top5ids=sortedByScore(myTeamReqs).slice(0,5).filter(function(r){return getScore(r)>0;}).map(function(r){return r.id;});
   var ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
-
   return React.createElement("div",{className:"space-y-4"},
     React.createElement("div",{className:"bg-white rounded-xl border p-3 space-y-3"},
-      React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},
-        React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),
-        TEAMS.map(function(t){var tc=teamColor(t);return React.createElement(FilterChip,{key:t,label:t,active:fTeams.includes(t),activeClass:tc.light,onClick:function(){toggleTeam(t);}});}),
-        fTeams.length>0 && React.createElement("button",{onClick:function(){setFTeams([]);},className:"text-xs text-gray-400 hover:text-gray-600 ml-1"},"✕ Clear")
-      ),
-      React.createElement("div",{className:"flex items-center gap-2 flex-wrap border-t pt-2"},
-        React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Stage:"),
-        PIPELINE_STAGES.map(function(s){return React.createElement(FilterChip,{key:s,label:s,active:fStages.includes(s),onClick:function(){toggleStage(s);}});}),
-        fStages.length>0 && React.createElement("button",{onClick:function(){setFStages([]);},className:"text-xs text-gray-400 hover:text-gray-600 ml-1"},"✕ Clear")
-      ),
-      React.createElement("div",{className:"flex items-center justify-between border-t pt-2"},
-        React.createElement("span",{className:"text-xs text-gray-400"},ranked.length+" items"),
-        React.createElement(SyncBadge,{status:syncStatus})
-      )
+      React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),TEAMS.map(function(t){var tc=teamColor(t);return React.createElement(FilterChip,{key:t,label:t,active:fTeams.includes(t),activeClass:tc.light,onClick:function(){toggleTeam(t);}});}),fTeams.length>0&&React.createElement("button",{onClick:function(){setFTeams([]);},className:"text-xs text-gray-400 hover:text-gray-600 ml-1"},"✕ Clear")),
+      React.createElement("div",{className:"flex items-center gap-2 flex-wrap border-t pt-2"},React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Stage:"),PIPELINE_STAGES.map(function(s){return React.createElement(FilterChip,{key:s,label:s,active:fStages.includes(s),onClick:function(){toggleStage(s);}});}),fStages.length>0&&React.createElement("button",{onClick:function(){setFStages([]);},className:"text-xs text-gray-400 hover:text-gray-600 ml-1"},"✕ Clear")),
+      React.createElement("div",{className:"flex items-center justify-between border-t pt-2"},React.createElement("span",{className:"text-xs text-gray-400"},ranked.length+" items"),React.createElement(SyncBadge,{status:syncStatus}))
     ),
     React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-xs text-indigo-700"},React.createElement("p",{className:"font-bold mb-1"},"⭐ Rate your team's requirements"),React.createElement("p",null,"Expand each card to score it. The top 5 by score will be presented tomorrow.")),
-    ranked.length===0
-      ? React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet."))
-      : ranked.map(function(r){
-          var tc=teamColor(r.team); var isOwner=r.team===user.team; var isEditing=editing===r.id; var score=getScore(r);
-          var isTop5=top5ids.includes(r.id); var cat=getCategory(r); var ew=isEasyWin(r); var inJira=isInJira(r);
-          return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(isTop5?" border-l-4 border-l-indigo-500":"")},
-            React.createElement("div",{className:"p-4 cursor-pointer hover:bg-gray-50",onClick:function(){if(!isEditing)setExpanded(expanded===r.id?null:r.id);}},
-              React.createElement("div",{className:"flex items-start gap-3"},
-                isTop5&&React.createElement("div",{className:"flex-shrink-0 mt-0.5 text-lg"},"🏆"),
-                React.createElement("div",{className:"flex-1 min-w-0"},
-                  React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),
-                  React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-2"},
-                    React.createElement(Badge,{cls:tc.badge},r.team),
-                    r.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),
-                    r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),
-                    cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),
-                    score>0&&React.createElement(Badge,{cls:"bg-slate-100 text-slate-700"},"⭐ "+score+"/20"),
-                    ew&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),
-                    inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey})
-                  )
-                ),
-                React.createElement("span",{className:"text-gray-300 text-lg mt-0.5"},expanded===r.id?"▲":"▼")
-              )
-            ),
-            expanded===r.id&&!isEditing&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-4"},
-              r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
-              React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs"},
-                r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),
-                r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),
-                r.agentPotential&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Agent: "),r.agentPotential),
-                r.workaround&&React.createElement("div",{className:"col-span-2"},React.createElement("span",{className:"font-semibold text-gray-600"},"Workaround: "),r.workaround)
-              ),
-              r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
-              isOwner&&React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
-                React.createElement("p",{className:"text-xs font-black text-gray-700 uppercase tracking-wide"},"⭐ Rate this requirement"),
-                React.createElement("div",{className:"grid grid-cols-2 gap-4"},
-                  React.createElement(ScorePicker,{label:"Impact",emoji:"💥",color:"blue",value:r.impactScore||0,onChange:function(v){onUpdate(r.id,{impactScore:v});},desc:"How severe is the pain?"}),
-                  React.createElement(ScorePicker,{label:"Frequency",emoji:"🔁",color:"orange",value:r.frequencyScore||0,onChange:function(v){onUpdate(r.id,{frequencyScore:v});},desc:"How often in real production?"}),
-                  React.createElement(ScorePicker,{label:"Risk",emoji:"⚠️",color:"red",value:r.riskScore||0,onChange:function(v){onUpdate(r.id,{riskScore:v});},desc:"Cost of NOT fixing this?"}),
-                  React.createElement(ScorePicker,{label:"Strategic leverage",emoji:"🚀",color:"indigo",value:r.leverageScore||0,onChange:function(v){onUpdate(r.id,{leverageScore:v});},desc:"Does this unlock scale or AI?"})
-                ),
-                score>0&&React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Total: "+score+"/20 — "+autoBucket(score))),
-                React.createElement("button",{
-                  type:"button",
-                  className:"w-full flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all text-left "+(ew?"bg-green-50 border-green-400":"border-gray-200 hover:border-green-300"),
-                  onClick:function(e){e.preventDefault();e.stopPropagation();onUpdate(r.id,{easyWin:!ew});}
-                },
-                  React.createElement("div",{className:"w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(ew?"bg-green-500 border-green-500":"border-gray-300 bg-white")},
-                    ew&&React.createElement("span",{className:"text-white text-xs font-bold"},"✓")
-                  ),
-                  React.createElement("div",{className:"flex-1"},
-                    React.createElement("div",{className:"flex items-center gap-1.5"},React.createElement("p",{className:"text-sm font-bold "+(ew?"text-green-700":"text-gray-700")},"⚡ Easy win"),React.createElement(EasyWinTooltip,null)),
-                    React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Mark if scope is clear and no deep analysis needed")
-                  ),
-                  ew&&React.createElement("span",{className:"text-green-500 text-xs font-bold flex-shrink-0"},"Marked")
-                )
-              ),
-              isOwner&&React.createElement("div",{className:"flex gap-2 pt-1"},
-                React.createElement("button",{onClick:function(){setEditing(r.id);setEditForm(Object.assign({},r));},className:"flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50"},"✏️ Edit"),
-                React.createElement("button",{onClick:function(){onDelete(r.id);},className:"py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50"},"🗑️ Delete")
-              )
-            ),
-            isEditing&&editForm&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
-              React.createElement("p",{className:"text-xs font-bold text-gray-600"},"✏️ Editing — auto-translates to English on save"),
-              React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
-              React.createElement("textarea",{className:ta,rows:3,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
-              React.createElement("textarea",{className:ta,rows:2,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
-              React.createElement("div",{className:"flex gap-2"},
-                React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(null);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),
-                React.createElement("button",{onClick:function(){setEditing(null);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel")
-              )
-            )
-          );
-        })
+    ranked.length===0?React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet.")):ranked.map(function(r){
+      var tc=teamColor(r.team);var isOwner=r.team===user.team;var isEditing=editing===r.id;var score=getScore(r);var isTop5=top5ids.includes(r.id);var cat=getCategory(r);var ew=isEasyWin(r);var inJira=isInJira(r);
+      return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(isTop5?" border-l-4 border-l-indigo-500":"")},
+        React.createElement("div",{className:"p-4 cursor-pointer hover:bg-gray-50",onClick:function(){if(!isEditing)setExpanded(expanded===r.id?null:r.id);}},
+          React.createElement("div",{className:"flex items-start gap-3"},
+            isTop5&&React.createElement("div",{className:"flex-shrink-0 mt-0.5 text-lg"},"🏆"),
+            React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-2"},React.createElement(Badge,{cls:tc.badge},r.team),r.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),score>0&&React.createElement(Badge,{cls:"bg-slate-100 text-slate-700"},"⭐ "+score+"/20"),ew&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
+            React.createElement("span",{className:"text-gray-300 text-lg mt-0.5"},expanded===r.id?"▲":"▼")
+          )
+        ),
+        expanded===r.id&&!isEditing&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-4"},
+          r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+          React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs"},r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),r.agentPotential&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-600"},"Agent: "),r.agentPotential),r.workaround&&React.createElement("div",{className:"col-span-2"},React.createElement("span",{className:"font-semibold text-gray-600"},"Workaround: "),r.workaround)),
+          r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
+          isOwner&&React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
+            React.createElement("p",{className:"text-xs font-black text-gray-700 uppercase tracking-wide"},"⭐ Rate this requirement"),
+            React.createElement("div",{className:"grid grid-cols-2 gap-4"},React.createElement(ScorePicker,{label:"Impact",emoji:"💥",color:"blue",value:r.impactScore||0,onChange:function(v){onUpdate(r.id,{impactScore:v});},desc:"How severe is the pain?"}),React.createElement(ScorePicker,{label:"Frequency",emoji:"🔁",color:"orange",value:r.frequencyScore||0,onChange:function(v){onUpdate(r.id,{frequencyScore:v});},desc:"How often in real production?"}),React.createElement(ScorePicker,{label:"Risk",emoji:"⚠️",color:"red",value:r.riskScore||0,onChange:function(v){onUpdate(r.id,{riskScore:v});},desc:"Cost of NOT fixing this?"}),React.createElement(ScorePicker,{label:"Strategic leverage",emoji:"🚀",color:"indigo",value:r.leverageScore||0,onChange:function(v){onUpdate(r.id,{leverageScore:v});},desc:"Does this unlock scale or AI?"})),
+            score>0&&React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 bg-slate-50 rounded-xl p-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Total: "+score+"/20 — "+autoBucket(score))),
+            React.createElement("button",{type:"button",className:"w-full flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all text-left "+(ew?"bg-green-50 border-green-400":"border-gray-200 hover:border-green-300"),onClick:function(e){e.preventDefault();e.stopPropagation();onUpdate(r.id,{easyWin:!ew});}},React.createElement("div",{className:"w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(ew?"bg-green-500 border-green-500":"border-gray-300 bg-white")},ew&&React.createElement("span",{className:"text-white text-xs font-bold"},"✓")),React.createElement("div",{className:"flex-1"},React.createElement("div",{className:"flex items-center gap-1.5"},React.createElement("p",{className:"text-sm font-bold "+(ew?"text-green-700":"text-gray-700")},"⚡ Easy win"),React.createElement(EasyWinTooltip,null)),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Mark if scope is clear and no deep analysis needed")),ew&&React.createElement("span",{className:"text-green-500 text-xs font-bold flex-shrink-0"},"Marked"))
+          ),
+          isOwner&&React.createElement("div",{className:"flex gap-2 pt-1"},React.createElement("button",{onClick:function(){setEditing(r.id);setEditForm(Object.assign({},r));},className:"flex-1 py-2 border-2 border-indigo-200 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50"},"✏️ Edit"),React.createElement("button",{onClick:function(){onDelete(r.id);},className:"py-2 px-4 border-2 border-rose-200 text-rose-500 rounded-xl text-xs font-bold hover:bg-rose-50"},"🗑️ Delete"))
+        ),
+        isEditing&&editForm&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+          React.createElement("p",{className:"text-xs font-bold text-gray-600"},"✏️ Editing — auto-translates to English on save"),
+          React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
+          React.createElement("textarea",{className:ta,rows:3,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
+          React.createElement("textarea",{className:ta,rows:2,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
+          React.createElement("div",{className:"flex gap-2"},React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(null);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),React.createElement("button",{onClick:function(){setEditing(null);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel"))
+        )
+      );
+    })
   );
 }
 
-// ── Read-Out Tab ─────────────────────────────────────────────
 function ReadOutTab(props) {
   var reqs=props.reqs; var onUpdate=props.onUpdate;
   var s1=useState(TEAMS[0]); var activeTeam=s1[0]; var setActiveTeam=s1[1];
@@ -543,58 +587,38 @@ function ReadOutTab(props) {
   var allTeamReqs=sortedByScore(reqs.filter(function(r){return r.team===activeTeam;}));
   var teamReqs=showEW?allTeamReqs:allTeamReqs.filter(function(r){return !isEasyWin(r);});
   var ewCount=allTeamReqs.filter(function(r){return isEasyWin(r);}).length;
-  var current=teamReqs[cursor];
-  var tc=teamColor(activeTeam);
-  var score=current?getScore(current):0;
+  var current=teamReqs[cursor]; var tc=teamColor(activeTeam); var score=current?getScore(current):0;
   var ta="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none";
   return React.createElement("div",{className:"space-y-4"},
-    React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2"},
-      activeTeams.map(function(t){var c=teamColor(t);return React.createElement("button",{key:t,onClick:function(){setActiveTeam(t);setCursor(0);setEditing(false);setShowEW(false);},className:"px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all "+(activeTeam===t?c.light:"border-gray-200 text-gray-500")},t);})
-    ),
-    React.createElement("div",{className:"flex items-center gap-3"},
-      React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-700 flex items-center gap-2 flex-1"},React.createElement("span",null,"📋"),React.createElement("span",null,"All requirements ordered by score")),
-      ewCount>0&&React.createElement("button",{onClick:function(){setCursor(0);setEditing(false);setShowEW(function(s){return !s;});},className:"text-xs px-3 py-2 rounded-xl border-2 font-bold transition-all flex-shrink-0 "+(showEW?"bg-green-500 border-green-500 text-white":"border-green-300 text-green-600 hover:bg-green-50")},showEW?"⚡ Hiding easy wins":"⚡ Show easy wins ("+ewCount+")")
-    ),
-    teamReqs.length===0
-      ?React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},allTeamReqs.length>0?"All requirements are easy wins — toggle to show them.":"No requirements from "+activeTeam+" yet."))
-      :React.createElement("div",{className:"space-y-4"},
-          current&&!editing&&React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4"},
-            React.createElement("div",{className:"flex items-start justify-between gap-3"},
-              React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},React.createElement(Badge,{cls:tc.badge},current.team),current.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+current.submittedBy),isEasyWin(current)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),isInJira(current)&&React.createElement(JiraBadge,{jiraKey:current.jiraKey}),React.createElement("span",{className:"text-xs font-bold text-gray-400"},"#"+(cursor+1)+" of "+teamReqs.length)),
-              React.createElement("button",{onClick:function(){setEditing(true);setEditForm(Object.assign({},current));},className:"text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0"},"✏️ Edit")
-            ),
-            React.createElement("p",{className:"text-xl font-black text-gray-900 leading-snug"},current.problem),
-            React.createElement("div",{className:"flex flex-wrap gap-2"},current.frequency&&React.createElement("div",{className:"flex gap-1.5 items-center"},React.createElement("span",{className:"text-lg"},FREQ_META[current.frequency]&&FREQ_META[current.frequency].emoji),React.createElement("span",{className:"text-sm font-semibold text-gray-600"},current.frequency)),current.agentPotential&&React.createElement(Badge,{cls:agentBadge(current.agentPotential)},current.agentPotential),current.pipelineStage&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},current.pipelineStage),getCategory(current)&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},getCategory(current))),
-            current.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-sm text-amber-900 leading-relaxed"},current.roleplayExample)),
-            current.workaround&&React.createElement("div",{className:"bg-slate-50 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-sm text-slate-700"},current.workaround)),
-            current.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-sm text-emerald-900 leading-relaxed"},current.definition)),
-            score>0&&React.createElement("div",{className:"bg-white border rounded-xl p-3 flex flex-wrap gap-4 text-xs text-gray-500"},React.createElement("span",null,"💥 Impact: ",React.createElement("strong",null,current.impactScore||0)),React.createElement("span",null,"🔁 Frequency: ",React.createElement("strong",null,current.frequencyScore||0)),React.createElement("span",null,"⚠️ Risk: ",React.createElement("strong",null,current.riskScore||0)),React.createElement("span",null,"🚀 Leverage: ",React.createElement("strong",null,current.leverageScore||0)),React.createElement("span",{className:"font-black ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},score+"/20 · "+autoBucket(score)))
-          ),
-          current&&editing&&editForm&&React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-300 shadow-lg p-6 space-y-4"},
-            React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-black text-gray-800"},"✏️ Editing card"),React.createElement("span",{className:"text-xs text-gray-400 italic"},"Auto-translates to English")),
-            React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
-            React.createElement("textarea",{className:ta,rows:4,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
-            React.createElement("textarea",{className:ta,rows:2,value:editForm.workaround,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{workaround:e.target.value});});},placeholder:"Workaround"}),
-            React.createElement("textarea",{className:ta,rows:3,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
-            React.createElement("div",{className:"flex gap-2"},
-              React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(false);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),
-              React.createElement("button",{onClick:function(){setEditing(false);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel")
-            )
-          ),
-          React.createElement("div",{className:"flex gap-3"},
-            React.createElement("button",{onClick:function(){setCursor(function(c){return Math.max(0,c-1);});setEditing(false);},disabled:cursor===0,className:"flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50"},"← Previous"),
-            React.createElement("button",{onClick:function(){setCursor(function(c){return Math.min(teamReqs.length-1,c+1);});setEditing(false);},disabled:cursor===teamReqs.length-1,className:"flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50"},"Next →")
-          ),
-          React.createElement("div",{className:"space-y-1"},teamReqs.map(function(r,i){var s=getScore(r);return React.createElement("button",{key:r.id,onClick:function(){setCursor(i);setEditing(false);},className:"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")},React.createElement("span",{className:"font-black text-gray-300 w-4"},"#"+(i+1)),React.createElement("span",{className:"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")},r.problem),isEasyWin(r)&&React.createElement("span",{className:"text-green-500 text-xs"},"⚡"),isInJira(r)&&React.createElement("span",{className:"text-blue-500 text-xs"},"🔷"),React.createElement("span",{className:"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")},s+"pts"));}))
-        )
+    React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2"},activeTeams.map(function(t){var c=teamColor(t);return React.createElement("button",{key:t,onClick:function(){setActiveTeam(t);setCursor(0);setEditing(false);setShowEW(false);},className:"px-3 py-1.5 rounded-full text-xs font-bold border-2 transition-all "+(activeTeam===t?c.light:"border-gray-200 text-gray-500")},t);})),
+    React.createElement("div",{className:"flex items-center gap-3"},React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-700 flex items-center gap-2 flex-1"},React.createElement("span",null,"📋"),React.createElement("span",null,"All requirements ordered by score")),ewCount>0&&React.createElement("button",{onClick:function(){setCursor(0);setEditing(false);setShowEW(function(s){return !s;});},className:"text-xs px-3 py-2 rounded-xl border-2 font-bold transition-all flex-shrink-0 "+(showEW?"bg-green-500 border-green-500 text-white":"border-green-300 text-green-600 hover:bg-green-50")},showEW?"⚡ Hiding easy wins":"⚡ Show easy wins ("+ewCount+")")),
+    teamReqs.length===0?React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},allTeamReqs.length>0?"All requirements are easy wins — toggle to show them.":"No requirements from "+activeTeam+" yet.")):React.createElement("div",{className:"space-y-4"},
+      current&&!editing&&React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-6 space-y-4"},
+        React.createElement("div",{className:"flex items-start justify-between gap-3"},React.createElement("div",{className:"flex items-center gap-2 flex-wrap"},React.createElement(Badge,{cls:tc.badge},current.team),current.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+current.submittedBy),isEasyWin(current)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),isInJira(current)&&React.createElement(JiraBadge,{jiraKey:current.jiraKey}),React.createElement("span",{className:"text-xs font-bold text-gray-400"},"#"+(cursor+1)+" of "+teamReqs.length)),React.createElement("button",{onClick:function(){setEditing(true);setEditForm(Object.assign({},current));},className:"text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg font-semibold flex-shrink-0"},"✏️ Edit")),
+        React.createElement("p",{className:"text-xl font-black text-gray-900 leading-snug"},current.problem),
+        React.createElement("div",{className:"flex flex-wrap gap-2"},current.frequency&&React.createElement("div",{className:"flex gap-1.5 items-center"},React.createElement("span",{className:"text-lg"},FREQ_META[current.frequency]&&FREQ_META[current.frequency].emoji),React.createElement("span",{className:"text-sm font-semibold text-gray-600"},current.frequency)),current.agentPotential&&React.createElement(Badge,{cls:agentBadge(current.agentPotential)},current.agentPotential),current.pipelineStage&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},current.pipelineStage),getCategory(current)&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},getCategory(current))),
+        current.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-sm text-amber-900 leading-relaxed"},current.roleplayExample)),
+        current.workaround&&React.createElement("div",{className:"bg-slate-50 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-sm text-slate-700"},current.workaround)),
+        current.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-4"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-sm text-emerald-900 leading-relaxed"},current.definition)),
+        score>0&&React.createElement("div",{className:"bg-white border rounded-xl p-3 flex flex-wrap gap-4 text-xs text-gray-500"},React.createElement("span",null,"💥 Impact: ",React.createElement("strong",null,current.impactScore||0)),React.createElement("span",null,"🔁 Frequency: ",React.createElement("strong",null,current.frequencyScore||0)),React.createElement("span",null,"⚠️ Risk: ",React.createElement("strong",null,current.riskScore||0)),React.createElement("span",null,"🚀 Leverage: ",React.createElement("strong",null,current.leverageScore||0)),React.createElement("span",{className:"font-black ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},score+"/20 · "+autoBucket(score)))
+      ),
+      current&&editing&&editForm&&React.createElement("div",{className:"bg-white rounded-2xl border-2 border-indigo-300 shadow-lg p-6 space-y-4"},
+        React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-black text-gray-800"},"✏️ Editing card"),React.createElement("span",{className:"text-xs text-gray-400 italic"},"Auto-translates to English")),
+        React.createElement("textarea",{className:ta,rows:2,value:editForm.problem,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{problem:e.target.value});});},placeholder:"Problem"}),
+        React.createElement("textarea",{className:ta,rows:4,value:editForm.roleplayExample,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{roleplayExample:e.target.value});});},placeholder:"Context & evidence"}),
+        React.createElement("textarea",{className:ta,rows:2,value:editForm.workaround,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{workaround:e.target.value});});},placeholder:"Workaround"}),
+        React.createElement("textarea",{className:ta,rows:3,value:editForm.definition,onChange:function(e){setEditForm(function(p){return Object.assign({},p,{definition:e.target.value});});},placeholder:"Definition of solved"}),
+        React.createElement("div",{className:"flex gap-2"},React.createElement("button",{onClick:function(){gs.translate({problem:editForm.problem,roleplayExample:editForm.roleplayExample,workaround:editForm.workaround,definition:editForm.definition}).then(function(t){return onUpdate(editForm.id,Object.assign({},editForm,t));}).then(function(){setEditing(false);setEditForm(null);});},className:"flex-1 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold"},"💾 Save & Translate"),React.createElement("button",{onClick:function(){setEditing(false);setEditForm(null);},className:"flex-1 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-500"},"Cancel"))
+      ),
+      React.createElement("div",{className:"flex gap-3"},React.createElement("button",{onClick:function(){setCursor(function(c){return Math.max(0,c-1);});setEditing(false);},disabled:cursor===0,className:"flex-1 py-3 rounded-xl border-2 text-sm font-bold disabled:opacity-30 hover:bg-gray-50"},"← Previous"),React.createElement("button",{onClick:function(){setCursor(function(c){return Math.min(teamReqs.length-1,c+1);});setEditing(false);},disabled:cursor===teamReqs.length-1,className:"flex-1 py-3 rounded-xl border-2 border-indigo-300 text-indigo-600 text-sm font-bold disabled:opacity-30 hover:bg-indigo-50"},"Next →")),
+      React.createElement("div",{className:"space-y-1"},teamReqs.map(function(r,i){var s=getScore(r);return React.createElement("button",{key:r.id,onClick:function(){setCursor(i);setEditing(false);},className:"w-full text-left px-4 py-2.5 rounded-xl text-xs flex items-center gap-3 "+(cursor===i?"bg-indigo-50 border border-indigo-200":"hover:bg-gray-50")},React.createElement("span",{className:"font-black text-gray-300 w-4"},"#"+(i+1)),React.createElement("span",{className:"font-semibold flex-1 "+(cursor===i?"text-indigo-700":"text-gray-700")},r.problem),isEasyWin(r)&&React.createElement("span",{className:"text-green-500 text-xs"},"⚡"),isInJira(r)&&React.createElement("span",{className:"text-blue-500 text-xs"},"🔷"),React.createElement("span",{className:"font-bold text-xs "+(s>=16?"text-rose-600":s>=10?"text-amber-600":"text-indigo-500")},s+"pts"));}))
+    )
   );
 }
 
-// ── Synthesis & Vote Tab ─────────────────────────────────────
 function SynthesisVoteTab(props) {
   var reqs=props.reqs; var votes=props.votes; var votingClosed=props.votingClosed;
   var user=props.user; var onVote=props.onVote; var onCloseVoting=props.onCloseVoting;
-  var onResetVoting=props.onResetVoting; var onUpdateReq=props.onUpdateReq;
   var s1=useState(null); var expanded=s1[0]; var setExpanded=s1[1];
   var vid=voterId(user);
   var myVotes=votes[vid]||{};
@@ -612,53 +636,26 @@ function SynthesisVoteTab(props) {
     var results=reqs.filter(function(r){return !isEasyWin(r);}).map(function(r){return Object.assign({},r,{totalVotes:getTotalVotes(r.id),selfScore:getScore(r)});}).sort(function(a,b){return (b.totalVotes+b.selfScore)-(a.totalVotes+a.selfScore);});
     return React.createElement("div",{className:"space-y-4"},
       React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center gap-3"},React.createElement("span",{className:"text-2xl"},"🏁"),React.createElement("div",null,React.createElement("p",{className:"text-sm font-bold text-emerald-700"},"Voting closed — final ranking"),React.createElement("p",{className:"text-xs text-emerald-600"},"Sorted by votes + self-score"))),
-      results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey})),React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))),React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")),expanded===r.id&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))));}),
-    );
+      results.map(function(r,i){var tc=teamColor(r.team);var s=getScore(r);var bucket=autoBucket(s);return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(i<3?" border-l-4 "+["border-l-yellow-400","border-l-gray-300","border-l-orange-400"][i]:"")},React.createElement("div",{className:"p-4 flex gap-3 items-start cursor-pointer hover:bg-gray-50",onClick:function(){setExpanded(expanded===r.id?null:r.id);}},React.createElement("div",{className:"text-2xl w-8 text-center flex-shrink-0"},medals[i]||("#"+(i+1))),React.createElement("div",{className:"flex-1 min-w-0 space-y-1"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey})),React.createElement("div",{className:"flex gap-3 text-xs text-gray-500 pt-1"},React.createElement("span",null,"🗳️ "+r.totalVotes+" vote pts"),React.createElement("span",null,"⭐ "+s+" self-score"),React.createElement("span",{className:"font-bold text-indigo-600 ml-auto"},"Combined: "+(r.totalVotes+s)))),React.createElement("span",{className:"text-gray-300"},expanded===r.id?"▲":"▼")),expanded===r.id&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition))));}));
   }
   return React.createElement("div",{className:"space-y-4"},
-    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
-      React.createElement("p",{className:"text-xs font-bold text-gray-600"},"📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)"),
-      React.createElement("div",{className:"grid grid-cols-3 gap-2"},React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-rose-600"},"🔥 Must-fix"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"16–20")),React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-amber-600"},"📈 Scale enabler"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"10–15")),React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-indigo-600"},"🚀 Strategic bet"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"1–9")))
-    ),
-    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
-      React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"🗳️ Your votes"),React.createElement("span",{className:"text-xs font-bold text-indigo-600"},myTotal+"/"+MAX+" used")),
-      React.createElement("p",{className:"text-xs text-gray-500"},"Each person has ",React.createElement("strong",null,"3 votes"),". You can put all 3 on one item or spread them."),
-      React.createElement("div",{className:"flex gap-1.5"},[0,1,2].map(function(i){return React.createElement("div",{key:i,className:"flex-1 h-2 rounded-full "+(i<myTotal?"bg-indigo-500":"bg-gray-200")});})),
-      React.createElement("div",{className:"flex items-center justify-between text-xs text-gray-400"},React.createElement("span",null,votedCount+" of "+totalPeople+" people voted"),myTotal>0&&React.createElement("span",{className:"text-indigo-500 font-semibold"},(MAX-myTotal)+" remaining"))
-    ),
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},React.createElement("p",{className:"text-xs font-bold text-gray-600"},"📊 Score = Impact + Frequency + Risk + Strategic (each 1–5, max 20)"),React.createElement("div",{className:"grid grid-cols-3 gap-2"},React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-rose-600"},"🔥 Must-fix"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"16–20")),React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-amber-600"},"📈 Scale enabler"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"10–15")),React.createElement("div",{className:"bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2"},React.createElement("p",{className:"text-xs font-black text-indigo-600"},"🚀 Strategic bet"),React.createElement("p",{className:"text-xs font-bold text-gray-700"},"1–9")))),
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"🗳️ Your votes"),React.createElement("span",{className:"text-xs font-bold text-indigo-600"},myTotal+"/"+MAX+" used")),React.createElement("p",{className:"text-xs text-gray-500"},"Each person has ",React.createElement("strong",null,"3 votes"),". You can put all 3 on one item or spread them."),React.createElement("div",{className:"flex gap-1.5"},[0,1,2].map(function(i){return React.createElement("div",{key:i,className:"flex-1 h-2 rounded-full "+(i<myTotal?"bg-indigo-500":"bg-gray-200")});})),React.createElement("div",{className:"flex items-center justify-between text-xs text-gray-400"},React.createElement("span",null,votedCount+" of "+totalPeople+" people voted"),myTotal>0&&React.createElement("span",{className:"text-indigo-500 font-semibold"},(MAX-myTotal)+" remaining"))),
     ranked.map(function(r){
       var tc=teamColor(r.team);var score=getScore(r);var bucket=autoBucket(score);
-      var myVote=getMyVote(r.id);var totalVotes=getTotalVotes(r.id);var remaining=MAX-myTotal;var isOpen=expanded===r.id;var cat=getCategory(r);
+      var myVote=getMyVote(r.id);var totalVotes=getTotalVotes(r.id);var isOpen=expanded===r.id;var cat=getCategory(r);
       return React.createElement("div",{key:r.id,className:"bg-white rounded-xl border shadow-sm overflow-hidden"+(myVote>0?" border-indigo-300 border-2":"")},
         React.createElement("div",{className:"p-4"},
-          React.createElement("div",{className:"flex items-start gap-3 cursor-pointer",onClick:function(){setExpanded(isOpen?null:r.id);}},
-            React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
-            React.createElement("div",{className:"text-right flex-shrink-0"},React.createElement("div",{className:"text-xl font-black text-indigo-600"},score),React.createElement("div",{className:"text-xs text-gray-400"},"score"),totalVotes>0&&React.createElement("div",{className:"text-xs font-bold text-emerald-600"},totalVotes+"🗳️")),
-            React.createElement("span",{className:"text-gray-300 mt-1"},isOpen?"▲":"▼")
-          ),
-          React.createElement("div",{className:"flex gap-2 mt-3 items-center"},
-            React.createElement("span",{className:"text-xs text-gray-400 font-semibold flex-shrink-0"},"Vote:"),
-            [1,2,3].map(function(n){var isActive=myVote===n;var wouldAdd=n-myVote;var canAdd=myTotal+wouldAdd<=MAX;var cls=isActive?"bg-indigo-600 border-indigo-600 text-white":canAdd?"border-gray-200 text-gray-500 hover:border-indigo-300":"border-gray-100 text-gray-300 cursor-not-allowed";return React.createElement("button",{key:n,onClick:function(){if(isActive||canAdd)onVote(r.id,isActive?0:n);},className:"flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all "+cls},(isActive?"✓ ":"")+n+" vote"+(n>1?"s":""));}),
-            myVote>0&&React.createElement("button",{onClick:function(){onVote(r.id,0);},className:"px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50 flex-shrink-0"},"✕")
-          )
+          React.createElement("div",{className:"flex items-start gap-3 cursor-pointer",onClick:function(){setExpanded(isOpen?null:r.id);}},React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold text-gray-800"},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1.5"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),cat&&React.createElement(Badge,{cls:"bg-purple-100 text-purple-700"},cat),r.frequency&&React.createElement(Badge,{cls:"bg-indigo-100 text-indigo-800"},r.frequency),isInJira(r)&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),React.createElement("div",{className:"text-right flex-shrink-0"},React.createElement("div",{className:"text-xl font-black text-indigo-600"},score),React.createElement("div",{className:"text-xs text-gray-400"},"score"),totalVotes>0&&React.createElement("div",{className:"text-xs font-bold text-emerald-600"},totalVotes+"🗳️")),React.createElement("span",{className:"text-gray-300 mt-1"},isOpen?"▲":"▼")),
+          React.createElement("div",{className:"flex gap-2 mt-3 items-center"},React.createElement("span",{className:"text-xs text-gray-400 font-semibold flex-shrink-0"},"Vote:"),[1,2,3].map(function(n){var isActive=myVote===n;var wouldAdd=n-myVote;var canAdd=myTotal+wouldAdd<=MAX;var cls=isActive?"bg-indigo-600 border-indigo-600 text-white":canAdd?"border-gray-200 text-gray-500 hover:border-indigo-300":"border-gray-100 text-gray-300 cursor-not-allowed";return React.createElement("button",{key:n,onClick:function(){if(isActive||canAdd)onVote(r.id,isActive?0:n);},className:"flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all "+cls},(isActive?"✓ ":"")+n+" vote"+(n>1?"s":""));}),myVote>0&&React.createElement("button",{onClick:function(){onVote(r.id,0);},className:"px-3 py-2 rounded-xl text-xs font-bold border-2 border-rose-200 text-rose-400 hover:bg-rose-50 flex-shrink-0"},"✕"))
         ),
-        isOpen&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
-          r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
-          r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
-          r.workaround&&React.createElement("p",{className:"text-xs text-gray-600"},React.createElement("span",{className:"font-semibold"},"Workaround: "),r.workaround),
-          React.createElement("div",{className:"text-xs text-gray-400 flex gap-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)))
-        )
+        isOpen&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),r.workaround&&React.createElement("p",{className:"text-xs text-gray-600"},React.createElement("span",{className:"font-semibold"},"Workaround: "),r.workaround),React.createElement("div",{className:"text-xs text-gray-400 flex gap-3"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0))))
       );
     }),
-    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},
-      React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-700"},"Voting status"),React.createElement("span",{className:"text-xs text-gray-400"},votedCount+"/"+totalPeople+" people voted")),
-      teamStatus.map(function(ts){return React.createElement("div",{key:ts.team,className:"flex items-center gap-2 text-xs"},React.createElement("div",{className:"w-2 h-2 rounded-full flex-shrink-0 "+(ts.voted>0?"bg-emerald-500":"bg-gray-300")}),React.createElement("span",{className:"flex-1 "+(ts.voted>0?"text-gray-700 font-semibold":"text-gray-400")},ts.team),React.createElement("span",{className:ts.voted===ts.total?"text-emerald-600 font-bold":"text-gray-400"},ts.voted+"/"+ts.total+" voted"));}),
-      React.createElement("button",{onClick:onCloseVoting,className:"w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700"},"🏁 Close voting & show results")
-    )
+    React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-3"},React.createElement("div",{className:"flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-700"},"Voting status"),React.createElement("span",{className:"text-xs text-gray-400"},votedCount+"/"+totalPeople+" people voted")),teamStatus.map(function(ts){return React.createElement("div",{key:ts.team,className:"flex items-center gap-2 text-xs"},React.createElement("div",{className:"w-2 h-2 rounded-full flex-shrink-0 "+(ts.voted>0?"bg-emerald-500":"bg-gray-300")}),React.createElement("span",{className:"flex-1 "+(ts.voted>0?"text-gray-700 font-semibold":"text-gray-400")},ts.team),React.createElement("span",{className:ts.voted===ts.total?"text-emerald-600 font-bold":"text-gray-400"},ts.voted+"/"+ts.total+" voted"));}),React.createElement("button",{onClick:onCloseVoting,className:"w-full py-3 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700"},"🏁 Close voting & show results"))
   );
 }
 
-// ── Engineering Tab ──────────────────────────────────────────
 function BestPracticesPanel() {
   var s=useState("epics"); var tab=s[0]; var setTab=s[1];
   return React.createElement("div",{className:"bg-white rounded-xl border shadow-sm overflow-hidden sticky top-4"},
@@ -668,46 +665,16 @@ function BestPracticesPanel() {
   );
 }
 
-// ── Jira Key Manual Input ────────────────────────────────────
 function JiraKeyInput(props) {
-  var req = props.req;
-  var onSave = props.onSave;
-  var s1 = useState(req.jiraKey || ""); var val = s1[0]; var setVal = s1[1];
-  var s2 = useState(false); var saved = s2[0]; var setSaved = s2[1];
-  var current = req.jiraKey || "";
-
-  function save() {
-    if (!val.trim()) return;
-    onSave(val.trim().toUpperCase());
-    setSaved(true);
-    setTimeout(function() { setSaved(false); }, 2000);
-  }
-  function clear() {
-    onSave("");
-    setVal("");
-  }
-
-  return React.createElement("div", { className: "border border-gray-200 rounded-xl p-3 space-y-2 bg-white" },
-    React.createElement("p", { className: "text-xs font-bold text-gray-600" }, "🔷 Jira key"),
-    current
-      ? React.createElement("div", { className: "flex items-center gap-2" },
-          React.createElement("span", { className: "inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-bold bg-blue-600 text-white" }, "🔷 ", current),
-          React.createElement("button", { onClick: clear, className: "text-xs text-gray-400 hover:text-rose-500 font-semibold" }, "✕ Clear")
-        )
-      : React.createElement("div", { className: "flex gap-2" },
-          React.createElement("input", {
-            className: "flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-400",
-            placeholder: "ej: OFF-12",
-            value: val,
-            onChange: function(e) { setVal(e.target.value); },
-            onKeyDown: function(e) { if (e.key === "Enter") save(); }
-          }),
-          React.createElement("button", {
-            onClick: save,
-            disabled: !val.trim(),
-            className: "px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-30"
-          }, saved ? "✓ Saved" : "Save")
-        )
+  var req=props.req; var onSave=props.onSave;
+  var s1=useState(req.jiraKey||""); var val=s1[0]; var setVal=s1[1];
+  var s2=useState(false); var saved=s2[0]; var setSaved=s2[1];
+  var current=req.jiraKey||"";
+  function save(){if(!val.trim())return;onSave(val.trim().toUpperCase());setSaved(true);setTimeout(function(){setSaved(false);},2000);}
+  function clear(){onSave("");setVal("");}
+  return React.createElement("div",{className:"border border-gray-200 rounded-xl p-3 space-y-2 bg-white"},
+    React.createElement("p",{className:"text-xs font-bold text-gray-600"},"🔷 Jira key"),
+    current?React.createElement("div",{className:"flex items-center gap-2"},React.createElement("span",{className:"inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-bold bg-blue-600 text-white"},"🔷 ",current),React.createElement("button",{onClick:clear,className:"text-xs text-gray-400 hover:text-rose-500 font-semibold"},"✕ Clear")):React.createElement("div",{className:"flex gap-2"},React.createElement("input",{className:"flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-blue-400",placeholder:"ej: OFF-12",value:val,onChange:function(e){setVal(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")save();}}),React.createElement("button",{onClick:save,disabled:!val.trim(),className:"px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-30"},saved?"✓ Saved":"Save"))
   );
 }
 
@@ -729,20 +696,16 @@ function EngineeringTab(props) {
   function getTotalVotes(id){var t=0;Object.values(votes).forEach(function(v){t+=Number(v[String(id)])||0;});return t;}
   function combinedScore(r){return getScore(r)+getTotalVotes(r.id);}
   function toggleTeam(t){setFTeams(function(p){return p.includes(t)?p.filter(function(x){return x!==t;}):[].concat(p,[t]);});setSelected([]);}
-
   var allSorted=reqs.slice().sort(function(a,b){return combinedScore(b)-combinedScore(a);});
   var filtered=fTeams.length===0?allSorted:allSorted.filter(function(r){return fTeams.includes(r.team);});
   var selectedReqs=filtered.filter(function(r){return selectedIds.includes(r.id);});
-
   var byCategory=filtered.reduce(function(acc,r){var cat=getCategory(r)||"Uncategorized";if(!acc[cat])acc[cat]=[];acc[cat].push(r);return acc;},{});
   var catOrder=["Workflow Optimization","Agent Enablement","Structural Re-Architecture","Uncategorized","Other"];
   var sortedCats=Object.keys(byCategory).sort(function(a,b){var ia=catOrder.indexOf(a);var ib=catOrder.indexOf(b);return (ia===-1?99:ia)-(ib===-1?99:ib);});
-
   function toggleReq(id){setSelected(function(p){return p.includes(id)?p.filter(function(x){return x!==id;}):[].concat(p,[id]);});}
   function toggleAll(){setSelected(selectedIds.length===filtered.length?[]:filtered.map(function(r){return r.id;}));}
   function toggleCat(catReqs){var allSel=catReqs.every(function(r){return selectedIds.includes(r.id);});if(allSel){setSelected(function(p){return p.filter(function(id){return !catReqs.find(function(r){return r.id===id;});});});}else{setSelected(function(p){var toAdd=catReqs.filter(function(r){return !p.includes(r.id);}).map(function(r){return r.id;});return p.concat(toAdd);});}}
   function setCtx(id,val){setReqContexts(function(p){var n=Object.assign({},p);n[id]=val;return n;});}
-
   function doGenerate(){
     if(!selectedIds.length)return;setGenerating(true);setGenError("");
     var ctxPromises=selectedReqs.map(function(r){var ctx=reqContexts[r.id]||"";if(!ctx.trim())return Promise.resolve(r);return gs.translate({additionalContext:ctx}).then(function(t){return Object.assign({},r,{additionalContext:t.additionalContext||ctx});}).catch(function(){return Object.assign({},r,{additionalContext:ctx});});});
@@ -753,38 +716,23 @@ function EngineeringTab(props) {
   function updateTicket(eIdx,tIdx,patch){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.map(function(t,j){return j===tIdx?Object.assign({},t,patch):t;})}):e;});});}
   function removeTicket(eIdx,tIdx){setEpics(function(p){return p.map(function(e,i){return i===eIdx?Object.assign({},e,{tickets:e.tickets.filter(function(_,j){return j!==tIdx;})}):e;});});}
   var approvedEpics=epics.filter(function(e){return e.approved;});
-
-  // ── Push to Jira + persist jiraKey back to each requirement ──
   function pushToJira(){
     if(!approvedEpics.length)return;
     setStep("pushing");
     gs.jira(approvedEpics).then(function(result){
       setPushResult(result);
-      if(result && result.ok && onUpdateReq) {
-        // result.keys is expected to be an array like ["OFF-12", "OFF-13", …]
-        // result.reqKeyMap is expected to be { "reqId": "JIRA-KEY", … } if the Apps Script returns it
-        // We support both: a flat map (reqKeyMap) or a fallback using the epic's reqIds + keys array
-        var keyMap = result.reqKeyMap || {};
-        // fallback: map reqIds from each approved epic to the corresponding key
-        if(!Object.keys(keyMap).length && Array.isArray(result.keys)) {
-          approvedEpics.forEach(function(epic, i) {
-            var key = result.keys[i];
-            if(key) {
-              (epic.reqIds || []).forEach(function(rid) { keyMap[String(rid)] = key; });
-            }
-          });
+      if(result&&result.ok&&onUpdateReq){
+        var keyMap=result.reqKeyMap||{};
+        if(!Object.keys(keyMap).length&&Array.isArray(result.keys)){
+          approvedEpics.forEach(function(epic,i){var key=result.keys[i];if(key){(epic.reqIds||[]).forEach(function(rid){keyMap[String(rid)]=key;});}});
         }
-        // persist jiraKey to each touched requirement
-        Object.entries(keyMap).forEach(function(entry) {
-          var rid = entry[0]; var key = entry[1];
-          onUpdateReq(Number(rid) || rid, {jiraKey: key});
-        });
+        Object.entries(keyMap).forEach(function(entry){var rid=entry[0];var key=entry[1];onUpdateReq(Number(rid)||rid,{jiraKey:key});});
       }
       setStep("done");
     });
   }
 
-  if(step==="done") return React.createElement("div",{className:"space-y-4"},pushResult&&pushResult.ok?React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"🎉"),React.createElement("p",{className:"text-xl font-black text-emerald-700"},"Done! Pushed to Jira"),React.createElement("p",{className:"text-sm text-emerald-600"},"Epics: ",React.createElement("strong",null,pushResult.keys&&pushResult.keys.join(", ")))):React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"⚠️"),React.createElement("p",{className:"text-xl font-black text-rose-700"},"Something went wrong"),React.createElement("p",{className:"text-xs text-rose-500 font-mono"},(pushResult&&pushResult.error)||"Unknown error")),React.createElement("button",{onClick:function(){setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);},className:"w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"},"← Start over"));
+  if(step==="done") return React.createElement("div",{className:"space-y-4"},pushResult&&pushResult.ok?React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center space-y-4"},React.createElement("p",{className:"text-5xl"},"🎉"),React.createElement("p",{className:"text-xl font-black text-emerald-700"},"Done! Pushed to Jira"),React.createElement("div",{className:"flex flex-wrap gap-2 justify-center"},pushResult.keys&&pushResult.keys.map(function(k){return React.createElement("a",{key:k,href:"https://readysetco.atlassian.net/browse/"+k,target:"_blank",rel:"noopener noreferrer",className:"inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-full font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors"},"🔷 ",k);})),React.createElement("p",{className:"text-xs text-emerald-500"},"Click any ticket to open it in Jira")):React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-2xl p-8 text-center space-y-3"},React.createElement("p",{className:"text-5xl"},"⚠️"),React.createElement("p",{className:"text-xl font-black text-rose-700"},"Something went wrong"),React.createElement("p",{className:"text-xs text-rose-500 font-mono"},(pushResult&&pushResult.error)||"Unknown error")),React.createElement("button",{onClick:function(){setStep("select");setSelected([]);setEpics([]);setJsonInput("");setPushResult(null);},className:"w-full py-3 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"},"← Start over"));
   if(step==="pushing") return React.createElement("div",{className:"flex flex-col items-center justify-center py-32 gap-4 text-gray-400"},React.createElement("div",{className:"text-6xl animate-bounce"},"🚀"),React.createElement("p",{className:"text-sm font-bold text-gray-600"},"Pushing to Jira…"));
   if(step==="paste") return React.createElement("div",{className:"flex gap-4 items-start"},React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},React.createElement("div",{className:"bg-white rounded-xl border p-4 flex items-center justify-between"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"Manual fallback — paste JSON"),React.createElement("button",{onClick:function(){setStep("select");},className:"text-xs text-gray-400 hover:text-gray-600"},"← Back")),React.createElement("textarea",{className:"w-full border-2 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none resize-none h-48 "+(jsonError?"border-rose-400":"border-gray-200"),placeholder:'[\n  { "title": "...", ... }\n]',value:jsonInput,onChange:function(e){setJsonInput(e.target.value);setJsonError("");}}),jsonError&&React.createElement("p",{className:"text-xs text-rose-600"},jsonError),React.createElement("button",{onClick:parseJson,disabled:!jsonInput.trim(),className:"w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-sm hover:bg-indigo-700 disabled:opacity-40"},"Review Epics →")),React.createElement("div",{className:"w-64 flex-shrink-0"},React.createElement(BestPracticesPanel,null)));
   if(step==="review") return React.createElement("div",{className:"flex gap-4 items-start"},
@@ -799,14 +747,8 @@ function EngineeringTab(props) {
             React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-500 block mb-1"},"Description"),React.createElement("textarea",{className:"w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-indigo-400 resize-none",rows:2,value:epic.description||"",onChange:function(e){updateEpic(eIdx,{description:e.target.value});}})),
             epic.openQuestions&&epic.openQuestions.length>0&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1"},React.createElement("p",{className:"text-xs font-bold text-amber-700"},"❓ Open questions"),epic.openQuestions.map(function(q,qi){return React.createElement("p",{key:qi,className:"text-xs text-amber-800 flex gap-1.5"},React.createElement("span",null,"·"),q);})),
             epicReqs.length>0&&React.createElement("div",{className:"space-y-1"},React.createElement("p",{className:"text-xs font-bold text-gray-400"},"Linked requirements"),epicReqs.map(function(r){return React.createElement("div",{key:r.id,className:"flex items-start gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-1.5"},React.createElement("span",{className:"w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0 mt-1"}),r.problem);})),
-            epic.tickets&&epic.tickets.length>0&&React.createElement("div",{className:"space-y-2 pt-1 border-t"},React.createElement("p",{className:"text-xs font-bold text-gray-400 pt-1"},"Child tickets"),
-              epic.tickets.map(function(t,tIdx){return React.createElement("div",{key:tIdx,className:"bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2"},
-                React.createElement("div",{className:"flex gap-2 items-center"},React.createElement("span",{className:"text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0"},"T"+(tIdx+1)),React.createElement("input",{className:"flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white",value:t.title||"",onChange:function(e){updateTicket(eIdx,tIdx,{title:e.target.value});}}),React.createElement("button",{onClick:function(){removeTicket(eIdx,tIdx);},className:"text-gray-300 hover:text-red-400 text-lg flex-shrink-0"},"×")),
-                t.role&&t.goal&&React.createElement("p",{className:"text-xs text-gray-500 px-1"},"As a ",React.createElement("strong",null,t.role),", I want to "+t.goal+(t.benefit?" "+t.benefit:"")),
-                t.questions&&t.questions.length>0&&React.createElement("div",{className:"bg-yellow-50 rounded-lg px-2 py-1.5"},t.questions.map(function(q,qi){return React.createElement("p",{key:qi,className:"text-xs text-yellow-700 flex gap-1"},React.createElement("span",null,"❓"),q);})),
-                React.createElement("div",{className:"space-y-1"},(t.acs||[]).map(function(ac,ai){return React.createElement("div",{key:ai,className:"flex gap-2 items-start"},React.createElement("span",{className:"text-xs text-gray-300 mt-1.5 flex-shrink-0"},"AC"+(ai+1)),React.createElement("input",{className:"flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white",value:ac||"",onChange:function(e){var acs=[].concat(t.acs);acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs:acs});}}));}))
-              );})
-            )
+            epic.tickets&&epic.tickets.length>0&&React.createElement("div",{className:"space-y-2 pt-1 border-t"},React.createElement("p",{className:"text-xs font-bold text-gray-400 pt-1"},"Child tickets"),epic.tickets.map(function(t,tIdx){return React.createElement("div",{key:tIdx,className:"bg-slate-50 border border-gray-200 rounded-xl p-3 space-y-2"},React.createElement("div",{className:"flex gap-2 items-center"},React.createElement("span",{className:"text-xs font-black text-indigo-400 bg-indigo-50 px-2 py-0.5 rounded flex-shrink-0"},"T"+(tIdx+1)),React.createElement("input",{className:"flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-400 bg-white",value:t.title||"",onChange:function(e){updateTicket(eIdx,tIdx,{title:e.target.value});}}),React.createElement("button",{onClick:function(){removeTicket(eIdx,tIdx);},className:"text-gray-300 hover:text-red-400 text-lg flex-shrink-0"},"×")),t.role&&t.goal&&React.createElement("p",{className:"text-xs text-gray-500 px-1"},"As a ",React.createElement("strong",null,t.role),", I want to "+t.goal+(t.benefit?" "+t.benefit:"")),t.questions&&t.questions.length>0&&React.createElement("div",{className:"bg-yellow-50 rounded-lg px-2 py-1.5"},t.questions.map(function(q,qi){return React.createElement("p",{key:qi,className:"text-xs text-yellow-700 flex gap-1"},React.createElement("span",null,"❓"),q);})),React.createElement("div",{className:"space-y-1"},(t.acs||[]).map(function(ac,ai){return React.createElement("div",{key:ai,className:"flex gap-2 items-start"},React.createElement("span",{className:"text-xs text-gray-300 mt-1.5 flex-shrink-0"},"AC"+(ai+1)),React.createElement("input",{className:"flex-1 border border-gray-100 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-300 bg-white",value:ac||"",onChange:function(e){var acs=[].concat(t.acs);acs[ai]=e.target.value;updateTicket(eIdx,tIdx,{acs:acs});}}))}))
+          );}))
           )
         );
       }),
@@ -819,56 +761,43 @@ function EngineeringTab(props) {
   return React.createElement("div",{className:"flex gap-4 items-start"},
     React.createElement("div",{className:"flex-1 min-w-0 space-y-4"},
       React.createElement("div",{className:"bg-white rounded-xl border p-4"},React.createElement("p",{className:"text-sm font-bold text-gray-800"},"⚙️ Engineering — All requirements"),React.createElement("p",{className:"text-xs text-gray-500 mt-0.5"},"Sorted by score + votes, grouped by category. Filter by team.")),
-      React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center"},
-        React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),
-        React.createElement(FilterChip,{label:"All",active:fTeams.length===0,onClick:function(){setFTeams([]);setSelected([]);}}),
-        TEAMS.map(function(t){var tc=teamColor(t);return React.createElement(FilterChip,{key:t,label:t,active:fTeams.includes(t),activeClass:tc.light,onClick:function(){toggleTeam(t);}});}),
-        React.createElement("span",{className:"ml-auto text-xs text-gray-400"},filtered.length+" reqs")
-      ),
-      React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},
-        React.createElement("p",{className:"text-xs font-bold text-gray-700 uppercase tracking-wide"},"Generation mode"),
-        React.createElement("div",{className:"grid grid-cols-2 gap-2"},
-          React.createElement("button",{onClick:function(){setGenMode("epics");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="epics"?"bg-indigo-50 border-indigo-500":"border-gray-200 hover:border-indigo-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="epics"?"text-indigo-700":"text-gray-700")},"🗂️ Epics + tickets"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Group requirements into epics with child stories")),
-          React.createElement("button",{onClick:function(){setGenMode("tickets");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="tickets"?"bg-green-50 border-green-500":"border-gray-200 hover:border-green-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="tickets"?"text-green-700":"text-gray-700")},"⚡ Tickets only"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Create standalone stories, no epic grouping"))
-        )
-      ),
-      filtered.length===0
-        ?React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet."))
-        :React.createElement("div",{className:"space-y-3"},
-            React.createElement("div",{className:"bg-white rounded-xl border p-3 flex items-center justify-between"},React.createElement("button",{onClick:toggleAll,className:"text-xs font-bold text-indigo-600 hover:underline"},selectedIds.length===filtered.length?"Deselect all":"Select all"),React.createElement("span",{className:"text-xs text-gray-400"},selectedIds.length+" selected")),
-            sortedCats.map(function(cat){
-              var catReqs=byCategory[cat];var allSel=catReqs.every(function(r){return selectedIds.includes(r.id);});
-              var catBg={"Workflow Optimization":"bg-green-700","Agent Enablement":"bg-purple-700","Structural Re-Architecture":"bg-red-700","Uncategorized":"bg-slate-600","Other":"bg-gray-600"}[cat]||"bg-indigo-700";
-              return React.createElement("div",{key:cat,className:"bg-white rounded-xl border shadow-sm overflow-hidden"},
-                React.createElement("div",{className:catBg+" px-4 py-2.5 flex items-center justify-between"},React.createElement("span",{className:"text-xs font-bold text-white"},"🏷️ "+cat),React.createElement("div",{className:"flex items-center gap-3"},React.createElement("span",{className:"text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full"},catReqs.length),React.createElement("button",{onClick:function(){toggleCat(catReqs);},className:"text-xs text-white opacity-80 hover:opacity-100 font-semibold"},allSel?"Deselect all":"Select all"))),
-                React.createElement("div",{className:"divide-y"},catReqs.map(function(r){
-                  var tc=teamColor(r.team);var sel=selectedIds.includes(r.id);var score=getScore(r);var vts=getTotalVotes(r.id);var isExp=expandedReq===r.id;var inJira=isInJira(r);var bucket=autoBucket(score);
-                  return React.createElement("div",{key:r.id,className:"overflow-hidden"+(inJira?" border-l-4 border-l-blue-400":"")},
-                    React.createElement("div",{onClick:function(){toggleReq(r.id);},className:"flex items-start gap-3 px-4 py-3 cursor-pointer transition-all "+(sel?"bg-indigo-50":"hover:bg-gray-50")},
-                      React.createElement("div",{className:"mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(sel?"bg-indigo-600 border-indigo-600":"border-gray-300")},sel&&React.createElement("span",{className:"text-white text-xs"},"✓")),
-                      React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),score>0&&React.createElement("span",{className:"text-xs text-indigo-500 font-bold"},"⭐"+score),vts>0&&React.createElement("span",{className:"text-xs text-emerald-600 font-bold"},"🗳️"+vts),isEasyWin(r)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
-                      React.createElement("button",{onClick:function(e){e.stopPropagation();setExpandedReq(isExp?null:r.id);},className:"text-gray-300 hover:text-gray-500 text-lg flex-shrink-0"},isExp?"▲":"▼")
-                    ),
-                    isExp&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
-                      React.createElement("p",{className:"text-base font-black text-gray-900"},r.problem),
-                      React.createElement("div",{className:"flex flex-wrap gap-2"},r.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),r.pipelineStage&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},r.pipelineStage),r.agentPotential&&React.createElement(Badge,{cls:agentBadge(r.agentPotential)},r.agentPotential)),
-                      r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
-                      r.workaround&&React.createElement("div",{className:"bg-slate-100 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-xs text-slate-700"},r.workaround)),
-                      r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
-                      React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border"},r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),score>0&&React.createElement("div",{className:"col-span-2 flex gap-3 pt-1 border-t mt-1"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Score: "+score+"/20 · "+autoBucket(score)))),
-                      React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-600 block mb-1"},"💬 Additional context ",React.createElement("span",{className:"text-gray-400 font-normal"},"(optional — translates to English)")),React.createElement("textarea",{className:"w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white",rows:3,placeholder:"Notes for engineering before generating…",value:reqContexts[r.id]||"",onChange:function(e){setCtx(r.id,e.target.value);}})),
-                      React.createElement(JiraKeyInput,{req:r,onSave:function(key){onUpdateReq(r.id,{jiraKey:key});}})
-                    )
-                  );
-                }))
+      React.createElement("div",{className:"bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center"},React.createElement("span",{className:"text-xs font-semibold text-gray-500"},"Team:"),React.createElement(FilterChip,{label:"All",active:fTeams.length===0,onClick:function(){setFTeams([]);setSelected([]);}}),TEAMS.map(function(t){var tc=teamColor(t);return React.createElement(FilterChip,{key:t,label:t,active:fTeams.includes(t),activeClass:tc.light,onClick:function(){toggleTeam(t);}});}),React.createElement("span",{className:"ml-auto text-xs text-gray-400"},filtered.length+" reqs")),
+      React.createElement("div",{className:"bg-white rounded-xl border p-4 space-y-2"},React.createElement("p",{className:"text-xs font-bold text-gray-700 uppercase tracking-wide"},"Generation mode"),React.createElement("div",{className:"grid grid-cols-2 gap-2"},React.createElement("button",{onClick:function(){setGenMode("epics");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="epics"?"bg-indigo-50 border-indigo-500":"border-gray-200 hover:border-indigo-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="epics"?"text-indigo-700":"text-gray-700")},"🗂️ Epics + tickets"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Group requirements into epics with child stories")),React.createElement("button",{onClick:function(){setGenMode("tickets");},className:"p-3 rounded-xl border-2 text-left transition-all "+(genMode==="tickets"?"bg-green-50 border-green-500":"border-gray-200 hover:border-green-200")},React.createElement("p",{className:"text-sm font-bold "+(genMode==="tickets"?"text-green-700":"text-gray-700")},"⚡ Tickets only"),React.createElement("p",{className:"text-xs text-gray-400 mt-0.5"},"Create standalone stories, no epic grouping")))),
+      filtered.length===0?React.createElement("div",{className:"text-center py-16 text-gray-400"},React.createElement("p",{className:"text-4xl mb-2"},"📭"),React.createElement("p",{className:"text-sm"},"No requirements yet.")):React.createElement("div",{className:"space-y-3"},
+        React.createElement("div",{className:"bg-white rounded-xl border p-3 flex items-center justify-between"},React.createElement("button",{onClick:toggleAll,className:"text-xs font-bold text-indigo-600 hover:underline"},selectedIds.length===filtered.length?"Deselect all":"Select all"),React.createElement("span",{className:"text-xs text-gray-400"},selectedIds.length+" selected")),
+        sortedCats.map(function(cat){
+          var catReqs=byCategory[cat];var allSel=catReqs.every(function(r){return selectedIds.includes(r.id);});
+          var catBg={"Workflow Optimization":"bg-green-700","Agent Enablement":"bg-purple-700","Structural Re-Architecture":"bg-red-700","Uncategorized":"bg-slate-600","Other":"bg-gray-600"}[cat]||"bg-indigo-700";
+          return React.createElement("div",{key:cat,className:"bg-white rounded-xl border shadow-sm overflow-hidden"},
+            React.createElement("div",{className:catBg+" px-4 py-2.5 flex items-center justify-between"},React.createElement("span",{className:"text-xs font-bold text-white"},"🏷️ "+cat),React.createElement("div",{className:"flex items-center gap-3"},React.createElement("span",{className:"text-xs bg-white bg-opacity-20 text-white px-2 py-0.5 rounded-full"},catReqs.length),React.createElement("button",{onClick:function(){toggleCat(catReqs);},className:"text-xs text-white opacity-80 hover:opacity-100 font-semibold"},allSel?"Deselect all":"Select all"))),
+            React.createElement("div",{className:"divide-y"},catReqs.map(function(r){
+              var tc=teamColor(r.team);var sel=selectedIds.includes(r.id);var score=getScore(r);var vts=getTotalVotes(r.id);var isExp=expandedReq===r.id;var inJira=isInJira(r);var bucket=autoBucket(score);
+              return React.createElement("div",{key:r.id,className:"overflow-hidden"+(inJira?" border-l-4 border-l-blue-400":"")},
+                React.createElement("div",{onClick:function(){toggleReq(r.id);},className:"flex items-start gap-3 px-4 py-3 cursor-pointer transition-all "+(sel?"bg-indigo-50":"hover:bg-gray-50")},
+                  React.createElement("div",{className:"mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 "+(sel?"bg-indigo-600 border-indigo-600":"border-gray-300")},sel&&React.createElement("span",{className:"text-white text-xs"},"✓")),
+                  React.createElement("div",{className:"flex-1 min-w-0"},React.createElement("p",{className:"text-sm font-semibold "+(sel?"text-indigo-800":"text-gray-800")},r.problem),React.createElement("div",{className:"flex flex-wrap gap-1.5 mt-1"},React.createElement(Badge,{cls:tc.badge},r.team),React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-medium "+buckBadge(bucket)},bucket),score>0&&React.createElement("span",{className:"text-xs text-indigo-500 font-bold"},"⭐"+score),vts>0&&React.createElement("span",{className:"text-xs text-emerald-600 font-bold"},"🗳️"+vts),isEasyWin(r)&&React.createElement(Badge,{cls:"bg-green-100 text-green-700"},"⚡ Easy win"),inJira&&React.createElement(JiraBadge,{jiraKey:r.jiraKey}))),
+                  React.createElement("button",{onClick:function(e){e.stopPropagation();setExpandedReq(isExp?null:r.id);},className:"text-gray-300 hover:text-gray-500 text-lg flex-shrink-0"},isExp?"▲":"▼")
+                ),
+                isExp&&React.createElement("div",{className:"border-t bg-slate-50 p-4 space-y-3"},
+                  React.createElement("p",{className:"text-base font-black text-gray-900"},r.problem),
+                  React.createElement("div",{className:"flex flex-wrap gap-2"},r.submittedBy&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-500"},"👤 "+r.submittedBy),r.pipelineStage&&React.createElement(Badge,{cls:"bg-gray-100 text-gray-600"},r.pipelineStage),r.agentPotential&&React.createElement(Badge,{cls:agentBadge(r.agentPotential)},r.agentPotential)),
+                  r.roleplayExample&&React.createElement("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-amber-700 mb-1"},"📝 Context & evidence"),React.createElement("p",{className:"text-xs text-amber-800 leading-relaxed"},r.roleplayExample)),
+                  r.workaround&&React.createElement("div",{className:"bg-slate-100 border border-slate-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-slate-600 mb-1"},"🔧 Current workaround"),React.createElement("p",{className:"text-xs text-slate-700"},r.workaround)),
+                  r.definition&&React.createElement("div",{className:"bg-emerald-50 border border-emerald-200 rounded-xl p-3"},React.createElement("p",{className:"text-xs font-bold text-emerald-700 mb-1"},"🎯 Definition of solved"),React.createElement("p",{className:"text-xs text-emerald-800 leading-relaxed"},r.definition)),
+                  React.createElement("div",{className:"grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white rounded-xl p-3 border"},r.stakeholders&&r.stakeholders.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Affected: "),(Array.isArray(r.stakeholders)?r.stakeholders:[r.stakeholders]).join(", ")),r.consequences&&r.consequences.length>0&&React.createElement("div",null,React.createElement("span",{className:"font-semibold text-gray-500"},"Cost: "),(Array.isArray(r.consequences)?r.consequences:[r.consequences]).join(", ")),score>0&&React.createElement("div",{className:"col-span-2 flex gap-3 pt-1 border-t mt-1"},React.createElement("span",null,"💥"+(r.impactScore||0)),React.createElement("span",null,"🔁"+(r.frequencyScore||0)),React.createElement("span",null,"⚠️"+(r.riskScore||0)),React.createElement("span",null,"🚀"+(r.leverageScore||0)),React.createElement("span",{className:"font-bold ml-auto "+(score>=16?"text-rose-600":score>=10?"text-amber-600":"text-indigo-600")},"Score: "+score+"/20 · "+autoBucket(score)))),
+                  React.createElement("div",null,React.createElement("label",{className:"text-xs font-bold text-gray-600 block mb-1"},"💬 Additional context ",React.createElement("span",{className:"text-gray-400 font-normal"},"(optional — translates to English)")),React.createElement("textarea",{className:"w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-400 resize-none bg-white",rows:3,placeholder:"Notes for engineering before generating…",value:reqContexts[r.id]||"",onChange:function(e){setCtx(r.id,e.target.value);}})),
+                  React.createElement(JiraKeyInput,{req:r,onSave:function(key){onUpdateReq(r.id,{jiraKey:key});}})
+                )
               );
-            }),
-            React.createElement("div",{className:"sticky bottom-4 pt-2 space-y-2"},
-              genError&&React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center"},genError," — ",React.createElement("button",{onClick:function(){setStep("paste");},className:"underline font-bold"},"paste manually instead")),
-              React.createElement("button",{onClick:doGenerate,disabled:!selectedIds.length||generating,className:"w-full py-4 text-white rounded-2xl font-bold text-sm disabled:opacity-40 shadow-xl transition-all "+(genMode==="tickets"?"bg-green-600 hover:bg-green-700":"bg-indigo-600 hover:bg-indigo-700")},generating?React.createElement("span",{className:"flex items-center justify-center gap-2"},React.createElement("span",{className:"animate-spin inline-block"},"⚙️"),"Generating… (~20s)"):(genMode==="tickets"?"⚡ Generate "+selectedIds.length+" standalone ticket"+(selectedIds.length!==1?"s":""):"✨ Generate epics & tickets from "+selectedIds.length+" requirement"+(selectedIds.length!==1?"s":""))),
-              selectedIds.length>0&&!generating&&React.createElement("p",{className:"text-center text-xs text-gray-400"},"Powered by Claude via Apps Script")
-            )
-          )
+            }))
+          );
+        }),
+        React.createElement("div",{className:"sticky bottom-4 pt-2 space-y-2"},
+          genError&&React.createElement("div",{className:"bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-600 text-center"},genError," — ",React.createElement("button",{onClick:function(){setStep("paste");},className:"underline font-bold"},"paste manually instead")),
+          React.createElement("button",{onClick:doGenerate,disabled:!selectedIds.length||generating,className:"w-full py-4 text-white rounded-2xl font-bold text-sm disabled:opacity-40 shadow-xl transition-all "+(genMode==="tickets"?"bg-green-600 hover:bg-green-700":"bg-indigo-600 hover:bg-indigo-700")},generating?React.createElement("span",{className:"flex items-center justify-center gap-2"},React.createElement("span",{className:"animate-spin inline-block"},"⚙️"),"Generating… (~20s)"):(genMode==="tickets"?"⚡ Generate "+selectedIds.length+" standalone ticket"+(selectedIds.length!==1?"s":""):"✨ Generate epics & tickets from "+selectedIds.length+" requirement"+(selectedIds.length!==1?"s":""))),
+          selectedIds.length>0&&!generating&&React.createElement("p",{className:"text-center text-xs text-gray-400"},"Powered by Claude via Apps Script")
+        )
+      )
     ),
     React.createElement("div",{className:"w-64 flex-shrink-0"},React.createElement(BestPracticesPanel,null))
   );
@@ -876,15 +805,16 @@ function EngineeringTab(props) {
 
 // ── Main App ─────────────────────────────────────────────────
 function App() {
-  var s1=useState(null); var user=s1[0]; var setUser=s1[1];
-  var s2=useState(1); var day=s2[0]; var setDay=s2[1];
-  var s3=useState(0); var tab=s3[0]; var setTab=s3[1];
-  var s4=useState([]); var reqs=s4[0]; var setReqs=s4[1];
-  var s5=useState({}); var votes=s5[0]; var setVotes=s5[1];
+  var s0=useState(null);  var googleUser=s0[0]; var setGoogleUser=s0[1];
+  var s1=useState(null);  var user=s1[0];       var setUser=s1[1];
+  var s2=useState(1);     var day=s2[0];        var setDay=s2[1];
+  var s3=useState(0);     var tab=s3[0];        var setTab=s3[1];
+  var s4=useState([]);    var reqs=s4[0];       var setReqs=s4[1];
+  var s5=useState({});    var votes=s5[0];      var setVotes=s5[1];
   var s6=useState(false); var votingClosed=s6[0]; var setVotingClosed=s6[1];
-  var s7=useState(true); var loading=s7[0]; var setLoading=s7[1];
+  var s7=useState(true);  var loading=s7[0];    var setLoading=s7[1];
   var s8=useState("idle"); var syncStatus=s8[0]; var setSync=s8[1];
-  var s9=useState(null); var lastRefresh=s9[0]; var setRefresh=s9[1];
+  var s9=useState(null);  var lastRefresh=s9[0]; var setRefresh=s9[1];
 
   function loadAll(){
     return Promise.all([gs.get("requirements"),loadVoting()]).then(function(results){
@@ -898,24 +828,29 @@ function App() {
   function withSync(fn){setSync("syncing");fn().then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function addReq(req){setSync("syncing");gs.upsert("requirements",req).then(function(){return loadAll();}).then(function(){setSync("ok");setTimeout(function(){setSync("idle");},2500);}).catch(function(){setSync("error");setTimeout(function(){setSync("idle");},4000);});}
   function updateReq(id,patch){
-    if (patch.hasOwnProperty("easyWin")) {
-      patch = Object.assign({}, patch, {easywin: patch.easyWin});
-      delete patch.easyWin;
-    }
-    var clean = Object.assign({}, patch);
-    ["approved","isTask","taskMeta","tickets","reqIds","openQuestions"].forEach(function(k){ delete clean[k]; });
+    if(patch.hasOwnProperty("easyWin")){patch=Object.assign({},patch,{easywin:patch.easyWin});delete patch.easyWin;}
+    var clean=Object.assign({},patch);
+    ["approved","isTask","taskMeta","tickets","reqIds","openQuestions"].forEach(function(k){delete clean[k];});
     var updated=reqs.map(function(r){return r.id===id?Object.assign({},r,clean):r;});
     setReqs(updated);
     withSync(function(){return gs.upsert("requirements",updated.find(function(r){return r.id===id;}));});
   }
   function deleteReq(id){setReqs(function(p){return p.filter(function(r){return r.id!==id;});});withSync(function(){return gs.del("requirements",id);});}
-
   function castVote(reqId,pts){var vid=voterId(user);var sid=String(reqId);setVotes(function(prev){var myV=Object.assign({},prev[vid]||{});if(pts===0){delete myV[sid];}else{myV[sid]=pts;}var next=Object.assign({},prev);next[vid]=myV;gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:myV});return next;});}
   function closeVoting(){setVotingClosed(true);gs.upsert("scores_upvotes",{id:"__voting_closed__",scores:true,upvotes:{}});}
   function resetVoting(){if(!window.confirm("Reset all votes? This cannot be undone."))return;setVotes({});setVotingClosed(false);gs.del("scores_upvotes","__voting_closed__");Object.values(TEAM_MEMBERS).reduce(function(a,b){return a.concat(b);}).forEach(function(name){var vid=name.toLowerCase().replace(/\s+/g,"-").replace(/[^a-z0-9-]/g,"");gs.upsert("scores_upvotes",{id:vid,scores:{},upvotes:{}});});}
+  function handleSignOut(){
+    if(window.google&&window.google.accounts){window.google.accounts.id.disableAutoSelect();}
+    setGoogleUser(null);setUser(null);
+  }
 
-  if(loading) return React.createElement("div",{style:{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}},React.createElement("div",{style:{fontSize:"2.5rem"}},"⚡"),React.createElement("p",{style:{fontSize:"0.875rem"}},"Loading from Google Sheets…"));
-  if(!user) return React.createElement(EntryScreen,{onEnter:function(t,d,name){setUser({team:t,name:name});setDay(d);setTab(0);}});
+  if(loading) return React.createElement("div",{style:{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#9ca3af",gap:"12px"}},React.createElement("div",{style:{fontSize:"2.5rem"}},"⚡"),React.createElement("p",{style:{fontSize:"0.875rem"}},"Loading…"));
+
+  // ── Auth gate ──────────────────────────────────────────────
+  if(!googleUser) return React.createElement(GoogleAuthGate,{onAuth:function(gu){setGoogleUser(gu);}});
+
+  // ── Name + day picker ──────────────────────────────────────
+  if(!user) return React.createElement(EntryScreen,{googleUser:googleUser,onSignOut:handleSignOut,onEnter:function(t,d,name){setUser({team:t,name:name});setDay(d);setTab(0);}});
 
   var tc=teamColor(user.team);
   var tabs=day===1?TABS_D1:TABS_D2;
@@ -924,7 +859,10 @@ function App() {
   return React.createElement("div",{className:"min-h-screen bg-gradient-to-br from-slate-50 to-indigo-50"},
     React.createElement("div",{className:"bg-indigo-700 text-white px-6 py-4 flex items-center justify-between shadow-lg"},
       React.createElement("div",null,React.createElement("h1",{className:"text-xl font-bold"},"⚡ Offsite Hub"),React.createElement("div",{className:"flex items-center gap-2 mt-0.5"},React.createElement("span",{className:"text-xs px-2 py-0.5 rounded-full font-bold "+(day===1?"bg-amber-400 text-amber-900":"bg-emerald-400 text-emerald-900")},"Day "+day),React.createElement("p",{className:"text-indigo-300 text-xs"},day===1?"Roleplay + Capture":"Synthesis + Engineering"))),
-      React.createElement("div",{className:"text-right"},React.createElement("span",{className:"inline-flex items-center px-3 py-1 rounded-full text-xs font-bold "+tc.bg+" text-white"},user.name||user.team),React.createElement("p",{className:"text-indigo-300 text-xs mt-0.5 opacity-70"},user.team),React.createElement("p",{className:"text-indigo-300 text-xs cursor-pointer hover:text-white",onClick:function(){setUser(null);}},"Switch →"))
+      React.createElement("div",{className:"text-right flex items-center gap-3"},
+        googleUser&&googleUser.picture&&React.createElement("img",{src:googleUser.picture,className:"w-7 h-7 rounded-full border-2 border-indigo-400"}),
+        React.createElement("div",null,React.createElement("span",{className:"inline-flex items-center px-3 py-1 rounded-full text-xs font-bold "+tc.bg+" text-white"},user.name||user.team),React.createElement("p",{className:"text-indigo-300 text-xs mt-0.5 opacity-70"},user.team),React.createElement("p",{className:"text-indigo-300 text-xs cursor-pointer hover:text-white",onClick:handleSignOut},"Sign out →"))
+      )
     ),
     React.createElement("div",{className:"bg-white border-b px-6 py-2.5 flex gap-4 text-xs text-gray-500 flex-wrap items-center"},
       React.createElement("span",null,"📌 ",React.createElement("strong",{className:"text-gray-800"},reqs.length)," requirements"),
